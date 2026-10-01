@@ -1,3 +1,4 @@
+import type { StructuralObservation } from "./seat-structural-activity-service.js";
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { EventBus } from "./event-bus.js";
@@ -41,6 +42,7 @@ export interface SeatActivityServiceDeps {
   now?: () => Date;
   /** S19: the self-report rung producer (Claude pid.json). Consulted per sweep for seats
    *  whose declared inventory staffs self-report; absent = the rung is absent. */
+  structuralReader?: (sessionName: string) => StructuralObservation | null;
   selfReportReader?: (sessionName: string, seatNodeId: string) => ActivityEvidence | null;
 }
 
@@ -57,8 +59,10 @@ export class SeatActivityService {
   // Single-flight guard: one whole-fleet window-activity sweep at a time, mirroring
   // seat-structural-activity-service (MUST-FIX 2). A slowed tmux can never accumulate
   // overlapping whole-fleet sweeps — at most one sweep's worth is ever in flight.
+  private readonly nativeClearedHookAt = new WeakMap<SeatLadderState, number>();
   private sweeping = false;
 
+  private readonly structuralReader: ((sessionName: string) => StructuralObservation | null) | null;
   private readonly selfReportReader: ((sessionName: string, seatNodeId: string) => ActivityEvidence | null) | null;
 
   constructor(deps: SeatActivityServiceDeps) {
@@ -66,6 +70,7 @@ export class SeatActivityService {
     this.defaultWindowSeconds = deps.defaultWindowSeconds;
     this.eventBus = deps.eventBus ?? null;
     this.now = deps.now ?? (() => new Date());
+    this.structuralReader = deps.structuralReader ?? null;
     this.selfReportReader = deps.selfReportReader ?? null;
   }
 
@@ -280,6 +285,7 @@ export class SeatActivityService {
     const seat = this.ladder.get(seatNodeId);
     if (!seat) return;
     seat.sources.clear();
+    this.nativeClearedHookAt.delete(seat);
     seat.pendingIdle = null;
     seat.contradictionSinceMs = null;
     seat.promotion.clear();
@@ -562,7 +568,7 @@ export class SeatActivityService {
     const chrome = this.latestByRung(seat, "needs-input-chrome");
     const hooksEv = this.latestByRung(seat, "lifecycle-hooks");
     const selfEv = this.latestByRung(seat, "self-report");
-    const needsInput: NeedsInputShape =
+    let needsInput: NeedsInputShape =
       chrome?.needsInput && this.rungTrust(seat, "needs-input-chrome") === "authoritative"
         ? chrome.needsInput
         : hooksEv?.needsInput && this.rungTrust(seat, "lifecycle-hooks") === "authoritative"
@@ -570,6 +576,35 @@ export class SeatActivityService {
           : selfEv?.needsInput && this.rungTrust(seat, "self-report") === "authoritative"
             ? selfEv.needsInput
             : { count: 0, reason: null };
+
+    if (seat.inventory?.runtime === "opencode" || seat.inventory?.runtime === "antigravity") {
+      needsInput = { count: 0, reason: null };
+      const observation = this.structuralReader?.(seat.sessionName);
+      const fresh = observation && nowMs - Date.parse(observation.observedAt) < 5000
+        && (!seat.arbitrated.lastSwap || Date.parse(observation.observedAt) > Date.parse(seat.arbitrated.lastSwap.at));
+      // Trial hooks stay trial for working/idle. The ingress route has already
+      // fenced native needs-input events to the current generation and native ID.
+      if (fresh && observation.state === "agent_idle") {
+        this.nativeClearedHookAt.set(seat, Date.parse(observation.observedAt));
+      }
+      const pendingHook = hooksEv?.needsInput && hooksEv.needsInput.count > 0
+        && Date.parse(hooksEv.observedAt) >= (this.nativeClearedHookAt.get(seat) ?? 0);
+      if (fresh && observation.state === "attention") {
+        needsInput = { count: 1, reason: observation.reason };
+      } else if (pendingHook && !(fresh && observation.state === "agent_idle"
+        && Date.parse(observation.observedAt) > Date.parse(hooksEv!.observedAt))) {
+        needsInput = hooksEv!.needsInput!;
+      } else if (fresh && observation.state === "agent_idle") {
+        needsInput = { count: 0, reason: null };
+      }
+      // Silence is not proof of an idle native prompt. Require the structural
+      // classifier when the trial hook cannot establish a turn boundary.
+      if (decidedBy === "window-sampling" && nextActivity === "idle-at-prompt"
+        && !(fresh && observation.state === "agent_idle")) {
+        nextActivity = "unknown";
+        decidedBy = null;
+      }
+    }
 
     const changed = nextActivity !== seat.arbitrated.activity
       || needsInput.count !== seat.arbitrated.needsInput.count

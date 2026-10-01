@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { NodeBinding } from "./runtime-adapter.js";
-import { permissionBindingOverride, type NativePermissionSelection } from "./native-permission-selection.js";
+import { permissionBindingOverride, validateNativePermissionSelection, type NativePermissionSelection } from "./native-permission-selection.js";
 
 export interface StoredNativePermissionSelection extends NativePermissionSelection {
   actor: string;
@@ -17,6 +17,10 @@ export class NativePermissionStore {
       runtime: string; mode: string; actor: string; reason: string; updated_at: string;
     } | undefined;
     if (!row) return null;
+    if (row.runtime === "opencode" || row.runtime === "antigravity") {
+      const selection = validateNativePermissionSelection(row.runtime, row.mode);
+      return { ...selection, actor: row.actor, reason: row.reason, updatedAt: row.updated_at };
+    }
     if ((row.runtime !== "codex" && row.runtime !== "claude-code") || !/^[A-Za-z][A-Za-z0-9_]*$/.test(row.mode)
       || (row.runtime === "codex" && row.mode !== "floor" && row.mode !== "full_bypass")) {
       throw new Error("Invalid persisted native permission selection; launch refused.");

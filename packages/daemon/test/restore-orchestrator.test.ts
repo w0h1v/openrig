@@ -104,6 +104,7 @@ describe("RestoreOrchestrator", () => {
     claude?: ClaudeResumeAdapter;
     codex?: CodexResumeAdapter;
     pi?: PiResumeAdapter;
+    nativeRuntimeAdapters?: Record<string, RuntimeAdapter>;
     listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
   }) {
     const tmux = opts?.tmux ?? mockTmux();
@@ -114,6 +115,7 @@ describe("RestoreOrchestrator", () => {
       claudeResume: opts?.claude ?? mockClaudeResume(),
       codexResume: opts?.codex ?? mockCodexResume(),
       piResume: opts?.pi,
+      nativeRuntimeAdapters: opts?.nativeRuntimeAdapters,
       listProcesses: opts?.listProcesses,
     });
   }
@@ -382,6 +384,44 @@ describe("RestoreOrchestrator", () => {
       expect(new AppliedLaunchObservationStore(db).readCurrent(node.id)).toBeNull();
       expect(db.prepare("SELECT COUNT(*) AS n FROM applied_launch_observations WHERE generation_uuid = ?").get(generation)).toEqual({ n: 0 });
     }
+  });
+
+  it.each([
+    ["opencode", "opencode_id", "ses_exactNative", "openrouter/vendor/model"],
+    ["antigravity", "antigravity_id", "12345678-1234-4123-8123-123456789abc", "example-native-model"],
+  ])("restores %s through its managed adapter with the exact model and conversation", async (runtime, resumeType, token, model) => {
+    const rig = rigRepo.createRig(`r99-native-${runtime}`);
+    const node = rigRepo.addNode(rig.id, "worker", { runtime, cwd: "/work" });
+    sessionRegistry.registerSession(node.id, `r99-native-${runtime}`);
+    sessionRegistry.updateBinding(node.id, { tmuxSession: `r99-native-${runtime}` });
+    const launchHarness = vi.fn(async () => ({ ok: true, resumeToken: token, resumeType }));
+    const checkReady = vi.fn(async () => ({ ready: true }));
+    const adapter = { launchHarness, checkReady } as unknown as RuntimeAdapter;
+    const orch = createOrchestrator({ nativeRuntimeAdapters: { [runtime]: adapter } });
+    const resume = () => (orch as any).attemptResume(node.id, `r99-native-${runtime}`, resumeType, token, "/work", null, model, "floor");
+    expect(await resume()).toEqual({ kind: "resumed" });
+    expect(launchHarness).toHaveBeenCalledWith(expect.objectContaining({ model, cwd: "/work", launchPosture: "floor", launchGeneration: sessionRegistry.currentOccupantTenure(node.id)!.generationUuid }), { name: `r99-native-${runtime}`, resumeToken: token });
+    launchHarness.mockResolvedValueOnce({ ok: true, resumeToken: "different", resumeType });
+    expect(await resume()).toEqual({ kind: "failed", message: expect.stringContaining("requested conversation") });
+    expect(checkReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps native authentication gates actionable and never retries a failed native resume as fresh", async () => {
+    const rig = rigRepo.createRig("r99-native-auth");
+    const node = rigRepo.addNode(rig.id, "worker", { runtime: "opencode", cwd: "/work" });
+    sessionRegistry.registerSession(node.id, "r99-native-auth");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "r99-native-auth" });
+    const adapter = {
+      launchHarness: vi.fn(async () => ({ ok: true, resumeToken: "ses_saved", resumeType: "opencode_id" })),
+      checkReady: vi.fn(async () => ({ ready: false, code: "login_required", reason: "Authenticate provider" })),
+    } as unknown as RuntimeAdapter;
+    const orch = createOrchestrator({ nativeRuntimeAdapters: { opencode: adapter } });
+    expect(await (orch as any).attemptResume(node.id, "r99-native-auth", "opencode_id", "ses_saved", "/work", null, "openrouter/vendor/model", "floor"))
+      .toEqual({ kind: "attention_required", message: "Authenticate provider" });
+    expect(adapter.launchHarness).toHaveBeenCalledTimes(1);
+    const unavailable = createOrchestrator();
+    expect(await (unavailable as any).attemptResume(node.id, "r99-native-auth", "opencode_id", "ses_saved", "/work", null, "openrouter/vendor/model", "floor"))
+      .toEqual({ kind: "failed", message: expect.stringContaining("unavailable") });
   });
 
   it("nonexistent snapshot -> { ok: false, code: 'snapshot_not_found' }", async () => {

@@ -39,6 +39,8 @@ const toneClass: Record<RuntimeBrandId, string> = {
   "claude-code": "border-[#9f5f4e]/40 bg-[#b06a57]/[0.12] text-[#62392f]",
   codex: "border-outline/50 bg-surface-lowest/75 text-on-surface",
   pi: "border-[#4c5b9e]/45 bg-[#5b6bb5]/[0.10] text-[#33406e]",
+  opencode: "border-outline/50 bg-surface-lowest/75 text-on-surface",
+  "antigravity": "border-outline/50 bg-surface-lowest/75 text-on-surface",
   terminal: "border-outline/45 bg-inverse-surface/[0.08] text-on-surface",
   unknown: "border-outline-variant bg-surface-lowest/55 text-on-surface-variant",
 };
@@ -47,6 +49,8 @@ const inlineToneClass: Record<RuntimeBrandId, string> = {
   "claude-code": "text-[#62392f]",
   codex: "text-on-surface",
   pi: "text-[#33406e]",
+  opencode: "text-on-surface",
+  "antigravity": "text-on-surface",
   terminal: "text-on-surface",
   unknown: "text-on-surface-variant",
 };
@@ -350,6 +354,7 @@ export function RuntimeMark({ runtime, size = "sm", className, title, decorative
   const cls = cn(sizeClass[size], "shrink-0", className);
   if (id === "claude-code") return <ClaudeGlyph className={cls} title={label} decorative={decorative} />;
   if (id === "codex") return <CodexGlyph className={cls} title={label} decorative={decorative} />;
+  if (id === "opencode" || id === "antigravity") return <svg viewBox="0 0 20 16" {...glyphA11y(label, decorative)} className={cls}><text x="1" y="12" fontSize="12" fill="currentColor">{id === "opencode" ? "oc" : "ag"}</text></svg>;
   if (id === "pi") return <PiGlyph className={cls} title={label} decorative={decorative} />;
   if (id === "terminal") return <TerminalGlyph className={cls} title={label} decorative={decorative} />;
   return <UnknownGlyph className={cls} title={label} decorative={decorative} />;

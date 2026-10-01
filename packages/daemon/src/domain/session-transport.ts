@@ -1,3 +1,5 @@
+import { classifyOpenCodePrompt } from "../adapters/opencode-runner-protocol.js";
+import { classifyAntigravityPrompt } from "../adapters/antigravity-runtime-adapter.js";
 import { randomUUID } from "node:crypto";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
@@ -129,7 +131,7 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
   return truncateEvidence(priorTrimmed);
 }
 
-export function classifyPaneActivity(paneContent: string): PaneActivityClassification {
+export function classifyPaneActivity(paneContent: string, runtime?: string | null): PaneActivityClassification {
   const lastNonBlank = trimPaneLines(paneContent);
   if (lastNonBlank.length === 0) {
     return { state: "unknown", reason: "empty_capture", evidence: null };
@@ -167,6 +169,20 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
       reason: "permission_prompt",
       evidence: permissionPromptEvidence,
     };
+  }
+
+  if (runtime === "opencode" || runtime === "antigravity") {
+    const antigravity = runtime === "antigravity" ? classifyAntigravityPrompt(paneContent) : null;
+    if (antigravity?.code && ["login_required", "trust_gate", "native_error"].includes(antigravity.code)) {
+      return { state: "attention", reason: antigravity.code, evidence: antigravity.reason ?? null };
+    }
+    const empty = runtime === "opencode" ? classifyOpenCodePrompt(paneContent) === "empty" : antigravity?.ready;
+    if (empty && !MID_WORK_PATTERNS.some(pattern => pattern.test(recentWindow))) {
+      return { state: "agent_idle", reason: "native_empty_prompt", evidence: "Native input is empty" };
+    }
+    // Native footers remain visible while editing a draft: only the empty input
+    // placeholder proves that automatic submission cannot consume manual text.
+    return { state: "unknown", reason: "native_prompt_not_empty", evidence: truncateEvidence(lastLine) };
   }
 
   const promptDraftEvidence = findPromptDraftBeforeFooter(paneContent);
@@ -338,7 +354,7 @@ export async function probeSessionActivity(input: {
   try {
     const paneContent = await tmuxAdapter.capturePaneContent(sessionName, 20);
     const capturedAt = new Date().toISOString();
-    const classification = classifyPaneActivity(paneContent ?? "");
+    const classification = classifyPaneActivity(paneContent ?? "", runtime);
     return observeProbe(captureSlot(paneContent, capturedAt, captureSeq), {
       state: mapPaneState(classification.state),
       reason: classification.reason,
@@ -1474,6 +1490,15 @@ export class SessionTransport {
       sessionName: input.sessionName,
       now,
     });
+    if (input.runtime === "opencode" || input.runtime === "antigravity") {
+      const pane = await probeSessionActivity({ ...input, attachmentType: input.attachmentType as "tmux" | "external_cli" | null,
+        tmuxAdapter: this.tmuxAdapter, now, captureObserver: this.captureObserver });
+      if (hookActivity && !hookActivity.stale && hookActivity.state === "running" && this.hookFreshForSend(hookActivity, now)) return hookActivity;
+      if (pane.state !== "idle") return pane;
+      // A fresh visible empty prompt clears an old permission notification after
+      // cancellation; a native footer alone never establishes send readiness.
+      return pane;
+    }
     // Use the fresh runtime-hook as the authoritative signal ONLY within the tight send-readiness
     // window. Beyond it (but still inside the looser display freshness) the hook is too old to prove
     // "safe to send now" — fall through to the real-time capture-pane probe (also Codex's sole guard).

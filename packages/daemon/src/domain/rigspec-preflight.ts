@@ -10,6 +10,8 @@ const RUNTIME_COMMANDS: Record<string, string> = {
   "claude-code": "claude --version",
   "codex": "codex --version",
   "pi": "pi --version",
+  "opencode": "opencode --version",
+  "antigravity": "agy --version",
 };
 
 interface RigSpecPreflightDeps {
@@ -141,7 +143,7 @@ import {
 
 // Slice 51-01 (OPR.0.5.1.1): `stub` is a first-class runtime (the deterministic node-script fake harness
 // through the real orchestrator) — admitted at the modern-pod preflight gate alongside the real runtimes.
-const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "terminal", "stub"]);
+const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "opencode", "antigravity", "terminal", "stub"]);
 
 // Default daemon-shipped asset paths for the managed Claude activity hooks — the SAME files the
 // ClaudeCodeAdapter is wired with in startup.ts (validation is the shared module either way).
@@ -381,6 +383,10 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
         errors.push(`${pod.id}.${member.id}: unsupported runtime "${member.runtime}"`);
       }
 
+      if ((member.runtime === "opencode" || member.runtime === "antigravity") && !configResult.config.model?.trim()) {
+        errors.push(`${pod.id}.${member.id}: ${member.runtime} requires an explicit model in the member, profile, or agent defaults`);
+      }
+
       // Check cwd (required, already validated by RigSpec schema, but double-check)
       if (!member.cwd) {
         errors.push(`${pod.id}.${member.id}: cwd is required`);
@@ -402,6 +408,11 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
     // launch-time surprise.
     const piErrors = await verifyPiRuntimeAvailable(rigSpec, preflightCtx.exec);
     errors.push(...piErrors);
+    for (const runtime of ["opencode", "antigravity"]) {
+      if (!rigSpec.pods.some(pod => pod.members.some(member => member.runtime === runtime))) continue;
+      try { await preflightCtx.exec(RUNTIME_COMMANDS[runtime]!); }
+      catch { errors.push(`Runtime '${runtime}' is unavailable; install its CLI and verify ${RUNTIME_COMMANDS[runtime]}`); }
+    }
   }
 
   // §6 RECONCILIATION — WARNING EMISSION ORDER (PM ruling 2026-08-05): ACTIVITY-HOOK-FIRST,

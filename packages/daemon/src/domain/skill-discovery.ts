@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { SkillResource } from "./types.js";
 
-export type SkillRuntime = "claude-code" | "codex";
+export type SkillRuntime = "claude-code" | "codex" | "opencode" | "antigravity";
 
 export interface SkillDiscoveryPaths {
   runtime: SkillRuntime;
@@ -192,11 +192,12 @@ export function discoverSkillsForRuntime(paths: SkillDiscoveryPaths): SkillDisco
  *  cross-runtime one. */
 function listScanRoots(paths: SkillDiscoveryPaths): string[] {
   const { runtime, homedir, cwd, specInstallDir } = paths;
-  const runtimeDir = runtime === "claude-code" ? ".claude" : ".agents";
+  const runtimeDir = runtime === "claude-code" ? ".claude" : runtime === "opencode" ? ".opencode" : ".agents";
   const roots: string[] = [];
 
   // 1. Rig-bundled at cwd (most-specific; ships with the rig source).
   roots.push(join(cwd, runtimeDir, "skills"));
+  if (runtime === "opencode") roots.push(join(cwd, ".agents", "skills"));
 
   // 2. Spec-install-dir bundled (bundled-with-rig but installed at a
   // separate path; e.g., from `rig up <bundle>` extraction).
@@ -204,7 +205,7 @@ function listScanRoots(paths: SkillDiscoveryPaths): string[] {
 
   // 3. Runtime-specific user library (Claude-only or Codex-only
   // operator install).
-  roots.push(join(homedir, runtimeDir, "skills"));
+  roots.push(runtime === "opencode" ? join(homedir, ".config", "opencode", "skills") : runtime === "antigravity" ? join(homedir, ".gemini", "antigravity-cli", "skills") : join(homedir, runtimeDir, "skills"));
 
   // 4. Shared user-spec library (cross-runtime operator install via
   // `rig specs add`).
@@ -214,12 +215,12 @@ function listScanRoots(paths: SkillDiscoveryPaths): string[] {
 }
 
 function rootToSourceKind(root: string, paths: SkillDiscoveryPaths): SourceKind {
-  const runtimeDir = paths.runtime === "claude-code" ? ".claude" : ".agents";
+  const runtimeDir = paths.runtime === "claude-code" ? ".claude" : paths.runtime === "opencode" ? ".opencode" : ".agents";
   const rigBundled = join(paths.cwd, runtimeDir, "skills");
-  if (root === rigBundled) return "rig_bundled";
+  if (root === rigBundled || root === join(paths.cwd, ".agents", "skills")) return "rig_bundled";
   if (paths.specInstallDir && root === join(paths.specInstallDir, "skills")) return "spec_install";
   const runtimeUser = join(paths.homedir, runtimeDir, "skills");
-  if (root === runtimeUser) return "runtime_user";
+  if (root === runtimeUser || root === join(paths.homedir, ".agents", "skills") || root === join(paths.homedir, ".config", "opencode", "skills") || root === join(paths.homedir, ".gemini", "antigravity-cli", "skills")) return "runtime_user";
   return "shared_user";
 }
 

@@ -328,7 +328,7 @@ function normalizeHookActivity(input: {
   let state: AgentActivity["state"] = "unknown";
   let normalizedReason = reason;
 
-  if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") {
+  if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active" || (runtime === "antigravity" && ["PreInvocation", "PostToolUse"].includes(rawEvent))) {
     state = "running";
   } else if (rawEvent === "PermissionRequest") {
     // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
@@ -349,6 +349,10 @@ function normalizeHookActivity(input: {
       state = "unknown";
       normalizedReason = rawSubtype ? reason : "notification";
     }
+
+  } else if ((runtime === "opencode" || runtime === "antigravity") && rawEvent === "SessionEnd") {
+    state = "unknown";
+    normalizedReason = "session_ended";
   } else if (rawEvent === "Stop" || rawEvent === "SessionEnd" || rawEvent === "stop" || rawEvent === "idle") {
     state = "idle";
   } else if (rawEvent === "SessionStart") {

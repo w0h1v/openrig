@@ -39,6 +39,8 @@ export interface ProjectionEntry {
 }
 
 export interface ProjectionPlan {
+  /** Exact-session restore omits replay but retains its selected native configuration. */
+  preserveRuntimeSettings?: boolean;
   runtime: string;
   cwd: string;
   entries: ProjectionEntry[];

@@ -157,3 +157,24 @@ describe("TUI startup choices", () => {
     expect(screen.hitMap.some((hit) => hit.action.type === "startup" && hit.action.key === "f")).toBe(true);
   });
 });
+
+describe("explicit provider kernels", () => {
+  it.each([["o", "opencode", "openrouter/vendor/model-q"], ["a", "antigravity", "antigravity-test-model"]])("requires a typed model for %s and passes it unchanged", async (key, runtime, model) => {
+    const f = fixture();
+    f.controller.state.page = "kernel";
+    f.response(async () => new Response(JSON.stringify({ rigId: "r1" })));
+    await f.controller.key(key);
+    expect(f.controller.state.page).toBe("model");
+    await f.controller.key("enter");
+    expect(f.posts).toEqual([]);
+    for (const ch of model) await f.controller.key(ch);
+    expect(startupLines(f.controller.state).map(line => line.text).join("\n")).toContain(model);
+    await f.controller.key("enter");
+    expect(f.posts).toEqual([{ route: "/api/startup/kernel", body: { runtime, model } }]);
+  });
+  it("cancels model entry without preparing or launching a kernel", async () => {
+    const f = fixture(); f.controller.state.page = "kernel";
+    await f.controller.key("o"); await f.controller.key("escape");
+    expect(f.controller.state.page).toBe("kernel"); expect(f.posts).toEqual([]);
+  });
+});

@@ -9,9 +9,10 @@
 // Honest failure mode: returns null when no token is available rather
 // than fabricating one (docs/as-built/architecture/adapters-and-runtimes.md § Resume honesty).
 
+import { validateResumeToken } from "../resume-token-validation.js";
 import type Database from "better-sqlite3";
 
-export type DiscoveryRuntime = "claude-code" | "codex";
+export type DiscoveryRuntime = "claude-code" | "codex" | "opencode";
 
 export interface DiscoveryResult {
   runtime: DiscoveryRuntime;
@@ -36,8 +37,8 @@ export type DiscoveryOutcome = { ok: true; result: DiscoveryResult } | { ok: fal
 
 export function discoverResumeToken(db: Database.Database, sourceSession: string): DiscoveryOutcome {
   const sessionRow = db
-    .prepare("SELECT id, node_id, resume_token FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
-    .get(sourceSession) as { id: string; node_id: string; resume_token: string | null } | undefined;
+    .prepare("SELECT id, node_id, resume_token, resume_type FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
+    .get(sourceSession) as { id: string; node_id: string; resume_token: string | null; resume_type: string | null } | undefined;
   if (!sessionRow) {
     return {
       ok: false,
@@ -52,12 +53,16 @@ export function discoverResumeToken(db: Database.Database, sourceSession: string
     .get(sessionRow.node_id) as { runtime: string | null; cwd: string | null } | undefined;
   const runtime = nodeRow?.runtime ?? null;
   const nodeCwd = nodeRow?.cwd ?? null;
+  if (runtime === "opencode") {
+    const validation = sessionRow.resume_type === "opencode_id" && sessionRow.resume_token ? validateResumeToken("opencode", sessionRow.resume_token) : null;
+    return { ok: true, result: { runtime, nativeId: validation?.ok ? validation.token : null, nodeCwd } };
+  }
   if (runtime !== "claude-code" && runtime !== "codex") {
     return {
       ok: false,
       failure: {
         code: "runtime_unsupported",
-        message: `Source session '${sourceSession}' has runtime '${runtime ?? "(unknown)"}' which has no native fork primitive. Only claude-code and codex sessions can be forked.`,
+        message: `Source session '${sourceSession}' has runtime '${runtime ?? "(unknown)"}' which has no native fork primitive. Only claude-code, codex, and opencode sessions can be forked.`,
       },
     };
   }

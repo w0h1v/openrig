@@ -19,6 +19,7 @@
 import { resumeTypeForRuntime, validateResumeToken, type ResumeType } from "./resume-token-validation.js";
 
 export interface ResumeTokenCaptureDeps {
+  nativeSessionStores?: Record<string, { readSessionId(sessionName: string, expectedGeneration?: string): { ok: true; sessionId: string } | { ok: false; reason: string } }>;
   contextUsageStore?: {
     readSidecar(sessionName: string): { ok: true; data: { session_id?: string } } | { ok: false; reason: string };
   } | null;
@@ -53,7 +54,7 @@ export type ResumeTokenDeriveResult =
  * caller's to swallow (capture must never fail or block its lifecycle op).
  */
 export async function deriveResumeToken(
-  input: { runtime: string | null; sessionName: string },
+  input: { runtime: string | null; sessionName: string; generation?: string },
   deps: ResumeTokenCaptureDeps,
 ): Promise<ResumeTokenDeriveResult> {
   const resumeType = resumeTypeForRuntime(input.runtime);
@@ -83,6 +84,12 @@ export async function deriveResumeToken(
     }
     if (state.sessionFile.trim().length > 0) token = state.sessionFile.trim();
     else return { outcome: "skipped", reason: "missing_sidecar" };
+  } else if (runtime === "opencode" || runtime === "antigravity") {
+    const store = deps.nativeSessionStores?.[runtime];
+    if (!store) return { outcome: "noop" };
+    const state = input.generation ? store.readSessionId(input.sessionName, input.generation) : store.readSessionId(input.sessionName);
+    if (!state.ok) return { outcome: "skipped", reason: state.reason === "parse_error" ? "parse_error" : "missing_sidecar" };
+    token = state.sessionId;
   } else {
     return { outcome: "noop" }; // resumeType set but runtime is not one we derive — defensive
   }

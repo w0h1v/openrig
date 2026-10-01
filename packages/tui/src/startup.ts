@@ -14,11 +14,13 @@ interface StartupRig { rigId: string; rigName: string; seats: StartupSeat[] }
 export interface StartupState {
   connection: "probing" | "up" | "down" | "unverified";
   local?: LocalReadingState;
-  open: boolean; busy: boolean; page: "probe" | "down" | "unavailable" | "rigs" | "seats" | "kernel" | "confirm";
+  open: boolean; busy: boolean; page: "probe" | "down" | "unavailable" | "rigs" | "seats" | "kernel" | "model" | "confirm";
   target: string; home: string; notice: string; detail: string; expanded: boolean;
   selected: number; scroll: number; rigs: Array<{ id: string; name: string }>;
   rig?: StartupRig; probe?: CrashCartRenderOpts; freshBlocked?: string;
-  prerequisites?: { codex: string; claudeCode: string };
+  prerequisites?: { codex: string; claudeCode: string; opencode?: string; antigravity?: string };
+  kernelRuntime?: "opencode" | "antigravity";
+  kernelModel?: string;
   consent?: { rigId: string; seat: StartupSeat };
 }
 export interface StartupDeps {
@@ -121,6 +123,15 @@ export class StartupController {
   async key(key: string) {
     this.interacted();
     const s = this.state;
+    if (s.page === "model" && !s.busy) {
+      if (key === "escape") { s.page = "kernel"; this.changed(); return; }
+      if (key === "backspace") s.kernelModel = (s.kernelModel ?? "").slice(0, -1);
+      else if (key === "enter") {
+        if (!s.kernelModel?.trim()) { s.notice = "Enter an explicit model ID."; this.changed(); return; }
+        await this.prepareKernel(s.kernelRuntime!, s.kernelModel.trim()); return;
+      } else if (key.length === 1 && !/[\x00-\x1f\x7f]/.test(key)) s.kernelModel = (s.kernelModel ?? "") + key;
+      this.changed(); return;
+    }
     // Read navigation is independent of the serialized effect/probe lane.
     if (key === "?") { this.deps.onHelp?.(); return; }
     if (key === "w") {
@@ -169,14 +180,13 @@ export class StartupController {
     if (s.page === "rigs" && key === "k" && !s.rigs.some((r) => r.name === "kernel")) {
       await this.run(async () => { s.prerequisites = await this.deps.client.startupRequest("/prerequisites"); s.page = "kernel"; }); return;
     }
+    if (s.page === "kernel" && ["o", "a"].includes(key)) {
+      s.kernelRuntime = key === "o" ? "opencode" : "antigravity";
+      s.kernelModel = ""; s.page = "model"; s.notice = "Choose the model for every AI seat in this kernel.";
+      this.changed(); return;
+    }
     if (s.page === "kernel" && ["c", "l"].includes(key)) {
-      await this.run(async () => {
-        const runtime = key === "c" ? "codex" : "claude-code";
-        s.notice = "Preparing kernel topology… no seats are being launched."; this.changed();
-        const result = await this.deps.client.startupRequest<{ rigId: string }>("/kernel", { runtime });
-        s.selected = 0; await this.readRig(result.rigId);
-        s.notice = "Kernel prepared. The operator is recommended; choose the seat to start.";
-      }); return;
+      await this.prepareKernel(key === "c" ? "codex" : "claude-code"); return;
     }
     if (s.page === "rigs" && key === "enter" && s.rigs[s.selected]) {
       await this.run(async () => { const id = s.rigs[s.selected]!.id; s.selected = 0; await this.readRig(id); s.notice = "Only the selected seat will be started. Other seats retain their history."; }); return;
@@ -213,6 +223,15 @@ export class StartupController {
       if (["running", "attention_required"].includes(seat.observed.state)) { s.open = false; this.deps.onWork(s.rig, seat); this.changed(); return; }
       await this.launch(s.rig!.rigId, seat, seat.hasHistory ? "resume" : "start");
     }
+  }
+  private async prepareKernel(runtime: string, model?: string) {
+    await this.run(async () => {
+      const s = this.state;
+      s.notice = "Preparing kernel topology… no seats are being launched."; this.changed();
+      const result = await this.deps.client.startupRequest<{ rigId: string }>("/kernel", { runtime, ...(model ? { model } : {}) });
+      s.selected = 0; await this.readRig(result.rigId);
+      s.notice = "Kernel prepared. The operator is recommended; choose the seat to start.";
+    });
   }
   private async launch(rigId: string, seat: StartupSeat, action: string) {
     await this.run(async () => {
@@ -255,7 +274,13 @@ export function startupLines(s: StartupState): Array<{ text: string; action?: Ac
   if (s.page === "kernel") {
     lines.push({ text: "Choose the runtime for this new kernel. No model or credential will be changed." });
     lines.push(button(`c  Codex · ${s.prerequisites?.codex ?? "unavailable"}`, "c"), button(`l  Claude Code · ${s.prerequisites?.claudeCode ?? "unavailable"}`, "l"));
-    lines.push({ text: "Unavailable means installation/authentication needs repair before setup." });
+    lines.push(button(`o  OpenCode · ${s.prerequisites?.opencode ?? "unavailable"}`, "o"), button(`a  Antigravity CLI · ${s.prerequisites?.antigravity ?? "unavailable"}`, "a"));
+    lines.push({ text: "OpenCode/Antigravity status checks installation only; native login and model access remain unverified." });
+  }
+  if (s.page === "model") {
+    lines.push({ text: `${s.kernelRuntime} model: ${s.kernelModel ?? ""}▏` },
+      { text: s.kernelRuntime === "antigravity" ? "Enter an exact model ID from agy models." : "Enter the exact native model ID (OpenCode: provider/model)." },
+      { text: "Enter prepares topology only; Esc returns. No model is selected automatically." });
   }
   if (s.page === "seats" && s.rig) {
     lines.push({ text: `${s.rig.rigName} · choose one seat; unselected seats remain unchanged` });

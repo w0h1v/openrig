@@ -1,6 +1,6 @@
 /** Native permission choices are future-launch settings, not work posture. */
 export interface NativePermissionSelection {
-  runtime: "codex" | "claude-code";
+  runtime: "codex" | "claude-code" | "opencode" | "antigravity";
   mode: string;
 }
 
@@ -14,6 +14,14 @@ export function validateNativePermissionSelection(
   mode: string,
   supportedClaudeModes: readonly string[] | null = null,
 ): NativePermissionSelection {
+  if (runtime === "opencode") {
+    if (mode === "floor" || mode === "native") return { runtime, mode };
+    throw new Error("OpenCode supports floor or native permission selection; full_bypass is unsupported because native deny rules remain authoritative.");
+  }
+  if (runtime === "antigravity") {
+    if (["floor", "full_bypass", "native", "accept-edits", "plan"].includes(mode)) return { runtime, mode };
+    throw new Error("Antigravity permission mode must be floor, full_bypass, native, accept-edits, or plan.");
+  }
   if (runtime !== "codex" && runtime !== "claude-code") {
     throw new Error(`Per-seat permission mode is unsupported for runtime '${runtime}'. Pi resource trust is separate.`);
   }
@@ -33,6 +41,6 @@ export function permissionBindingOverride(selection: NativePermissionSelection |
 } {
   if (!selection) return {};
   if (selection.mode === "floor" || selection.mode === "full_bypass") return { launchPosture: selection.mode };
-  if (selection.runtime !== "claude-code") throw new Error("Invalid persisted native permission selection.");
+  if (selection.runtime === "codex") throw new Error("Invalid persisted native permission selection.");
   return { permissionMode: selection.mode };
 }

@@ -39,9 +39,9 @@ export const TAXONOMY_TEACHING =
 export const ATOM_REGIONS = ["identity", "ontology", "terrain", "actors", "laws", "history", "state", "affordances"] as const;
 export const ATOM_SITUATIONS = ["fresh", "handover", "post-compaction"] as const;
 export const ATOM_PURPOSES = ["depth", "width"] as const;
-export const ATOM_RUNTIMES = ["claude", "codex", "any"] as const;
+export const ATOM_RUNTIMES = ["claude", "codex", "opencode", "antigravity", "any"] as const;
 export const ATOM_PRIORITIES = ["core", "recommended", "optional"] as const;
-export const CONTEXT_PROFILE_RUNTIMES = ["claude", "codex"] as const;
+export const CONTEXT_PROFILE_RUNTIMES = ["claude", "codex", "opencode", "antigravity"] as const;
 export const CONTEXT_PROFILE_SOURCES = ["project", "mission", "seat", "slice"] as const;
 
 /** An install ATOM (OPR.0.5.3.5 mini-req 1): an ADDRESS plus composition

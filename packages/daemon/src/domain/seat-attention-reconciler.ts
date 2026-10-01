@@ -10,7 +10,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { defaultListProcesses } from "./resume-metadata-refresher.js";
-import { verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, findExactNativeResumeProcess } from "./native-process-lineage.js";
+import { verifyAdditionalNativePaneProcess, verifyCodexPaneProcess, type AntigravityLaunchIdentityReader, type NativeProcessRow, type NativeProcessLister, findExactNativeResumeProcess } from "./native-process-lineage.js";
 
 type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand">;
 type ProcessRow = NativeProcessRow;
@@ -31,6 +31,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
   expectedResumeToken?: string | null;
   requireExactResumeLineage?: boolean;
   listProcesses?: NativeProcessLister;
+  readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
   now?: () => Date;
 }): Promise<PaneIdentityReconcileResult> {
   const observedAt = (input.now ?? (() => new Date()))().toISOString();
@@ -72,11 +73,22 @@ export async function rebindAndVerifyPaneIdentity(input: {
   let runtimeMatch = classifyPaneRuntimeMatch(command, input.runtime);
   const normalizedCommand = command?.trim().toLowerCase() ?? "";
   let lineageMatch: ProcessRow | null = null;
-  const expectedResumeToken = input.expectedResumeToken ?? null;
+  const expectedResumeToken = input.expectedResumeToken !== undefined ? input.expectedResumeToken
+    : (input.runtime === "opencode" || input.runtime === "antigravity")
+      ? (input.db.prepare("SELECT resume_token FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY id DESC LIMIT 1").get(input.nodeId, input.sessionName) as { resume_token: string | null } | undefined)?.resume_token ?? null
+      : null;
   const strictNativeLineage = input.requireExactResumeLineage === true
     && expectedResumeToken !== null
     && (input.runtime === "claude-code" || input.runtime === "codex");
-  if (input.runtime === "codex") {
+  const additionalNative = input.runtime === "opencode" || input.runtime === "antigravity";
+  if (additionalNative) {
+    runtimeMatch = "match";
+    const native = await verifyAdditionalNativePaneProcess({ target: pane.id, tmux: input.tmux, listProcesses: input.listProcesses, expectedToken: expectedResumeToken, requireResume: input.runtime === "opencode" || input.requireExactResumeLineage === true,
+      launchIdentity: input.runtime === "antigravity" ? input.readAntigravityLaunchIdentity?.(input.sessionName) : undefined,
+      expectedGeneration: input.sessionRegistry.currentOccupantTenure(input.nodeId)?.generationUuid }, input.runtime as "opencode" | "antigravity");
+    const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
+    if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
+  } else if (input.runtime === "codex") {
     // A shell/Node label describes the wrapper, not the native occupant.
     runtimeMatch = "match";
     const native = await verifyCodexPaneProcess({ target: pane.id, tmux: input.tmux,
@@ -96,7 +108,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
       // Missing process evidence is ambiguity, never positive identity.
     }
   }
-  const runtimeAmbiguous = input.runtime === "codex" ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
+  const runtimeAmbiguous = input.runtime === "codex" || additionalNative ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null
     : input.runtime === "claude-code" && !normalizedCommand.includes("claude"));
   const verdict: SeatIdentityVerdict = {
@@ -185,6 +197,7 @@ export interface CaptureFn {
 }
 
 interface ClearAttentionDeps {
+  readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
   sessionRegistry: SessionRegistry;
   eventBus: EventBus;
   agentActivityStore: AgentActivityStore;
@@ -315,6 +328,7 @@ export class SeatAttentionReconciler {
         nodeId: session.nodeId,
         sessionName,
         runtime: session.runtime,
+        readAntigravityLaunchIdentity: this.deps.readAntigravityLaunchIdentity,
       });
       if (!identity.ok) {
         return {

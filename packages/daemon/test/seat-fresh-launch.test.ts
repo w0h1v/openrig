@@ -138,12 +138,16 @@ describe("SeatLifecycleService.launchFresh", () => {
     else adapter.checkReady = async () => ({ ready: false, code: "hook_trust_gate", reason: "native gate" });
     const first = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "explicit fresh" });
     expect(first.ok).toBe(false);
-    adapter.checkReady = async () => ({ ready: true });
+    const generation = sessionRegistry.currentOccupantTenure(seat.node.id)!.generationUuid;
+    // Native adapters reject DB bindings without the current launch generation.
+    const readiness = vi.fn(async (binding: Parameters<RuntimeAdapter["checkReady"]>[0]) => ({ ready: binding.launchGeneration === generation }));
+    adapter.checkReady = readiness;
     const rows = sessionRegistry.getSessionsForRig(seat.rig.id).map((s) => s.id);
     const launch = vi.spyOn(adapter, "launchHarness");
     const delivery = vi.spyOn(adapter, "deliverStartup");
     const continued = await service.continueFreshStartup(seat.sessionName);
     expect(continued.ok).toBe(true);
+    expect(readiness).toHaveBeenCalledWith(expect.objectContaining({ launchGeneration: generation }));
     expect(launch).not.toHaveBeenCalled();
     expect(delivery).toHaveBeenCalled();
     expect(sessionRegistry.getSessionsForRig(seat.rig.id).map((s) => s.id)).toEqual(rows);

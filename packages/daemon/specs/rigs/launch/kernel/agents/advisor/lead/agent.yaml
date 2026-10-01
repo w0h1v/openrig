@@ -17,6 +17,14 @@ profiles:
       plugins: [shared:openrig-core]
       runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
 
+  native:
+    uses:
+      skills: [openrig-architect, requirements-writer]
+      guidance: []
+      subagents: []
+      plugins: []
+      runtime_resources: []
+
 resources:
   guidance:
     - id: role

@@ -1,4 +1,4 @@
-import { observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type CodexProcessObservation } from "./native-process-lineage.js";
+import { observeAdditionalNativePaneProcess, observeCodexPaneProcess, listNativeProcesses, type AntigravityLaunchIdentityReader, type NativeProcessLister, type CodexProcessObservation } from "./native-process-lineage.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -45,7 +45,10 @@ export function classifyPaneRuntimeMatch(
 ): "match" | "mismatch" {
   if (!command) return "match"; // no signal — never false-mismatch a present pane
   const cmd = command.trim().toLowerCase();
-  const expectsAgent = expectedRuntime === "claude-code" || expectedRuntime === "codex";
+  const expectsAgent = ["claude-code", "codex", "opencode", "antigravity"].includes(expectedRuntime ?? "");
+  const nativeNames: Record<string, string> = { "claude-code": "claude", codex: "codex", opencode: "opencode", "antigravity": "agy" };
+  const observedNative = Object.entries(nativeNames).find(([, name]) => cmd === name);
+  if (observedNative && expectsAgent) return observedNative[0] === expectedRuntime ? "match" : "mismatch";
 
   // Positive same-runtime signal.
   if (expectedRuntime === "claude-code" && cmd.includes("claude")) return "match";
@@ -69,6 +72,7 @@ interface RunningSeatRow {
   session_name: string;
   tmux_pane: string | null;
   resume_token?: string | null;
+  generation_uuid?: string | null;
 }
 
 export interface SeatIdentityReconcilerDeps {
@@ -76,6 +80,7 @@ export interface SeatIdentityReconcilerDeps {
   tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand">;
   now?: () => Date;
   listProcesses?: NativeProcessLister;
+  readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
 }
 
 /**
@@ -94,6 +99,7 @@ export class SeatIdentityReconciler {
   private readonly tmux: SeatIdentityReconcilerDeps["tmux"];
   private readonly now: () => Date;
   private readonly store: SeatIdentityStore;
+  private readonly readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
   private readonly listProcesses: NativeProcessLister;
   private timer: ReturnType<typeof setInterval> | null = null;
   private reconciling = false;
@@ -101,6 +107,7 @@ export class SeatIdentityReconciler {
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
+    this.readAntigravityLaunchIdentity = deps.readAntigravityLaunchIdentity;
     this.tmux = deps.tmux;
     this.now = deps.now ?? (() => new Date());
     this.store = new SeatIdentityStore(deps.db);
@@ -110,7 +117,8 @@ export class SeatIdentityReconciler {
   private runningSeats(): RunningSeatRow[] {
     return this.db.prepare(`
       SELECT n.id as node_id, n.runtime as runtime,
-             s.session_name as session_name, b.tmux_pane as tmux_pane, s.resume_token as resume_token
+             s.session_name as session_name, b.tmux_pane as tmux_pane, s.resume_token as resume_token,
+             (SELECT generation_uuid FROM occupant_tenures WHERE node_id = n.id ORDER BY generation_ordinal DESC LIMIT 1) as generation_uuid
       FROM nodes n
       JOIN sessions s ON s.node_id = n.id
         AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
@@ -163,13 +171,17 @@ export class SeatIdentityReconciler {
 
     // Two fresh process snapshots per sweep, not two ps calls per seat. Each
     // phase observes every bound pane; the second begins after the first ends.
-    const codexSeats = seats.filter((seat) => seat.runtime === "codex" && seat.tmux_pane && liveSessions.has(seat.session_name));
+    const codexSeats = seats.filter((seat) => ["codex", "opencode", "antigravity"].includes(seat.runtime ?? "") && seat.tmux_pane && liveSessions.has(seat.session_name));
     const sample = async () => {
       let snapshot: ReturnType<NativeProcessLister> | undefined;
-      return Promise.all(codexSeats.map((seat) => observeCodexPaneProcess({
-        target: seat.tmux_pane!, tmux: this.tmux, expectedToken: seat.resume_token,
-        listProcesses: () => snapshot ??= this.listProcesses(),
-      })));
+      return Promise.all(codexSeats.map((seat) => {
+        const input = { target: seat.tmux_pane!, tmux: this.tmux, expectedToken: seat.resume_token,
+          launchIdentity: seat.runtime === "antigravity" ? this.readAntigravityLaunchIdentity?.(seat.session_name) : undefined,
+          expectedGeneration: seat.generation_uuid,
+          listProcesses: () => snapshot ??= this.listProcesses() };
+        return seat.runtime === "opencode" || seat.runtime === "antigravity"
+          ? observeAdditionalNativePaneProcess(input, seat.runtime) : observeCodexPaneProcess(input);
+      }));
     };
     const first = await sample();
     if (generation !== this.generation) return;
@@ -194,7 +206,7 @@ export class SeatIdentityReconciler {
   private tmuxUnavailableVerdict(seat: RunningSeatRow, observedAt: string): SeatIdentityVerdict {
     return {
       nodeId: seat.node_id,
-      verdict: seat.runtime === "codex" ? "mismatch" : "tmux_unavailable",
+      verdict: ["codex", "opencode", "antigravity"].includes(seat.runtime ?? "") ? "mismatch" : "tmux_unavailable",
       evidenceSource: null,
       reason: "tmux_unavailable",
       evidence: { registeredPane: seat.tmux_pane, observedPid: null, observedCommand: null, matchedLayer: null },
@@ -230,7 +242,7 @@ export class SeatIdentityReconciler {
       }
       return {
         ...base,
-        verdict: seat.runtime === "codex" ? "mismatch" : "binding_absent",
+        verdict: ["codex", "opencode", "antigravity"].includes(seat.runtime ?? "") ? "mismatch" : "binding_absent",
         evidenceSource: "tmux_session",
         reason: "binding_pane_missing",
         evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
@@ -252,7 +264,7 @@ export class SeatIdentityReconciler {
     }
 
     const command = await this.tmux.getPaneCommand(seat.tmux_pane);
-    if (seat.runtime === "codex") {
+    if (["codex", "opencode", "antigravity"].includes(seat.runtime ?? "")) {
       return {
         ...base, verdict: native?.panePid === pid ? "verified" : "mismatch",
         evidenceSource: "pane_process", reason: native?.panePid === pid ? null : "process_identity_ambiguous",

@@ -1,4 +1,4 @@
-export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "terminal" | "unknown";
+export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "opencode" | "antigravity" | "terminal" | "unknown";
 
 export interface RuntimeBrand {
   id: RuntimeBrandId;
@@ -27,6 +27,8 @@ const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
     shortLabel: "Pi",
     tone: "slate",
   },
+  opencode: { id: "opencode", label: "OpenCode", shortLabel: "OpenCode", tone: "slate" },
+  "antigravity": { id: "antigravity", label: "Antigravity CLI", shortLabel: "Antigravity", tone: "slate" },
   terminal: {
     id: "terminal",
     label: "Terminal",
@@ -46,6 +48,8 @@ export function normalizeRuntimeBrandId(runtime: string | null | undefined): Run
   if (normalized === "claude" || normalized === "claude-code" || normalized.includes("claude")) return "claude-code";
   if (normalized === "codex" || normalized.includes("codex") || normalized.includes("openai")) return "codex";
   // Exact/prefixed match only — never a bare `includes("pi")` (api/pilot/…).
+  if (normalized === "opencode") return "opencode";
+  if (normalized === "antigravity") return "antigravity";
   if (normalized === "pi" || normalized.startsWith("pi-")) return "pi";
   if (normalized === "terminal" || normalized === "tmux" || normalized === "shell") return "terminal";
   return "unknown";

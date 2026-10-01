@@ -13,7 +13,7 @@ import {
   type AgentImageRuntime,
 } from "./agent-image-types.js";
 
-const ALLOWED_RUNTIMES: ReadonlySet<AgentImageRuntime> = new Set(["claude-code", "codex"]);
+const ALLOWED_RUNTIMES: ReadonlySet<AgentImageRuntime> = new Set(["claude-code", "codex", "opencode"]);
 const ALLOWED_FILE_SUFFIXES = [".md", ".markdown", ".yaml", ".yml", ".txt", ".json"];
 
 export function parseAgentImageManifest(rawYaml: string, sourcePath: string): AgentImageManifest {

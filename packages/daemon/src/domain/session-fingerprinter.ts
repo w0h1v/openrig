@@ -77,6 +77,8 @@ export class SessionFingerprinter {
         evidence.cmuxSignal = cmuxMatch;
         const hint = cmuxMatch.runtime.includes("claude") ? "claude-code" as RuntimeHint
           : cmuxMatch.runtime.includes("codex") ? "codex" as RuntimeHint
+          : cmuxMatch.runtime === "opencode" ? "opencode" as RuntimeHint
+          : ["agy", "antigravity"].includes(cmuxMatch.runtime) ? "antigravity" as RuntimeHint
           : "unknown" as RuntimeHint;
         return { runtimeHint: hint, confidence: "highest", evidence };
       }
@@ -100,6 +102,13 @@ export class SessionFingerprinter {
           evidence.processSignal = { command: pane.activeCommand, matched: pattern };
           return { runtimeHint: "codex", confidence: "high", evidence };
         }
+      }
+
+      const binary = cmd.split("/").pop();
+      if (binary === "opencode" || binary === "agy") {
+        evidence.layerUsed = 1;
+        evidence.processSignal = { command: pane.activeCommand, matched: binary };
+        return { runtimeHint: binary === "agy" ? "antigravity" : "opencode", confidence: "high", evidence };
       }
 
       if (SHELL_NAMES.has(cmd)) {

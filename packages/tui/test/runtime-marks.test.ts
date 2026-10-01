@@ -50,3 +50,8 @@ describe("row-scale mark family", () => {
     }
   });
 });
+
+it("gives new providers distinct readable marks", () => {
+  expect(markText(runtimeMarkSegs("opencode"))).toBe("oc");
+  expect(markText(runtimeMarkSegs("antigravity"))).toBe("ag");
+});
