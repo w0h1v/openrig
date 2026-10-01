@@ -36,7 +36,7 @@ export interface VerificationCheck {
 
 export interface RuntimeConfigDisclosure {
   scope: "global" | "project";
-  runtime: "claude-code" | "codex" | "cmux";
+  runtime: "claude-code" | "codex" | "opencode" | "antigravity" | "cmux";
   path: string;
   purpose: string;
 }
@@ -352,11 +352,16 @@ export function recordPermissionPolicyStep(deps: SetupDeps, choice: string, spec
   };
 }
 
-export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?: boolean; policy?: string; specPath?: string; doctorDeps?: DoctorDeps }): Promise<SetupResult> {
+export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?: boolean; runtime?: string; policy?: string; specPath?: string; doctorDeps?: DoctorDeps }): Promise<SetupResult> {
   const profile = opts.full ? "full" : "core";
   const platform = deps.platform ?? process.platform;
-  const runtimeConfig = buildRuntimeConfigDisclosure(platform);
+  if (opts.runtime && !["claude-code", "codex", "opencode", "antigravity"].includes(opts.runtime)) throw new Error("Unsupported runtime: choose claude-code, codex, opencode, or antigravity.");
+  const runtimeConfig = buildRuntimeConfigDisclosure(platform).filter(item => !opts.runtime || item.runtime === "cmux" || item.runtime === opts.runtime);
   const stepIds = opts.full ? [...CORE_STEP_IDS, ...FULL_EXTRA_STEP_IDS] : [...CORE_STEP_IDS];
+  if (opts.runtime) {
+    for (let i = stepIds.length - 1; i >= 0; i--) if (/^(claude|codex)_/.test(stepIds[i]!) && !stepIds[i]!.startsWith(opts.runtime === "claude-code" ? "claude_" : `${opts.runtime}_`)) stepIds.splice(i, 1);
+    if (["opencode", "antigravity"].includes(opts.runtime)) stepIds.push("native_runtime");
+  }
   const steps: SetupStep[] = [];
 
   if (opts.dryRun) {
@@ -534,6 +539,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
 
   // 4. tmux config
   // 4. Claude Code runtime
+  if (!opts.runtime || opts.runtime === "claude-code") {
   let claudeInstalled = false;
   try {
     deps.exec("claude --version");
@@ -578,7 +584,10 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     });
   }
 
+  }
+
   // 5. Codex runtime
+  if (!opts.runtime || opts.runtime === "codex") {
   let codexInstalled = false;
   try {
     deps.exec("codex --version");
@@ -642,6 +651,18 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
       message: "Skipped: Codex is not installed.",
       reason: "Authentication cannot be checked until the Codex CLI is installed.",
     });
+  }
+
+  }
+
+  if (opts.runtime === "opencode" || opts.runtime === "antigravity") {
+    const executable = opts.runtime === "opencode" ? "opencode" : "agy";
+    try {
+      deps.exec(`${executable} --version`);
+      steps.push({ id: "native_runtime", status: "pass", message: `${opts.runtime} executable available. Authentication and model entitlement have not been verified; configure them in the native CLI before launching a seat.` });
+    } catch {
+      steps.push({ id: "native_runtime", status: "fail", message: `${opts.runtime} is not installed or cannot run.`, fixHint: `Install ${opts.runtime}, complete native authentication, and rerun rig setup --runtime ${opts.runtime}.` });
+    }
   }
 
   // 6. tmux config
@@ -822,12 +843,13 @@ export function setupCommand(depsOverride?: SetupDeps): Command {
     .option("--dry-run", "Show the plan without making changes")
     .option("--json", "Machine-readable JSON output")
     .option("--full", "Install broader operator workstation tools")
+    .option("--runtime <runtime>", "Prepare only this provider: claude-code, codex, opencode, or antigravity")
     .option("--policy <name>", `Record a deliberate permission-policy choice into an existing spec (${POLICY_CHOICES.join("|")})`)
     .option("--spec <path>", "Existing rig spec (file or directory) to record the --policy choice into")
-    .action(async (opts: { dryRun?: boolean; json?: boolean; full?: boolean; policy?: string; spec?: string }) => {
+    .action(async (opts: { dryRun?: boolean; json?: boolean; full?: boolean; runtime?: string; policy?: string; spec?: string }) => {
       const deps = depsOverride ?? defaultDeps();
       const doctorDeps = opts.dryRun ? undefined : buildDefaultDoctorDeps(deps);
-      const result = await runSetup(deps, { dryRun: opts.dryRun, full: opts.full, policy: opts.policy, specPath: opts.spec, doctorDeps });
+      const result = await runSetup(deps, { dryRun: opts.dryRun, full: opts.full, runtime: opts.runtime, policy: opts.policy, specPath: opts.spec, doctorDeps });
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));

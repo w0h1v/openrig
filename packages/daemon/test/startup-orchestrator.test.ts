@@ -131,6 +131,32 @@ describe("StartupOrchestrator", () => {
     };
   }
 
+  it.each(["stale-generation", undefined])("passes the current occupant generation to every adapter phase (caller: %s)", async stale => {
+    const seed = seedSession();
+    const adapter = mockAdapter();
+    const binding = { ...makeBinding(), launchGeneration: stale };
+    const before = { ...binding };
+    const expectedGeneration = sessionRegistry.currentOccupantTenure(seed.nodeId)!.generationUuid;
+    const result = await createOrchestrator().startNode(makeInput(seed, { adapter, binding }));
+    expect(result.ok).toBe(true);
+    expect(adapter.project).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ launchGeneration: expectedGeneration }));
+    expect(adapter.deliverStartup).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ launchGeneration: expectedGeneration }));
+    expect(adapter.launchHarness).toHaveBeenCalledWith(expect.objectContaining({ launchGeneration: expectedGeneration }), expect.anything());
+    expect(adapter.checkReady).toHaveBeenCalledWith(expect.objectContaining({ launchGeneration: expectedGeneration }));
+    expect(binding).toEqual(before);
+  });
+
+  it("does not propagate an unverified caller generation when the ledger has no tenure", async () => {
+    const seed = seedSession();
+    db.prepare("DELETE FROM occupant_tenures WHERE node_id = ?").run(seed.nodeId);
+    const adapter = mockAdapter();
+    const binding = { ...makeBinding(), launchGeneration: "stale-generation" };
+    expect((await createOrchestrator().startNode(makeInput(seed, { adapter, binding }))).ok).toBe(true);
+    expect(adapter.launchHarness).toHaveBeenCalledWith(expect.objectContaining({ launchGeneration: undefined }), expect.anything());
+    expect(adapter.checkReady).toHaveBeenCalledWith(expect.objectContaining({ launchGeneration: undefined }));
+    expect(binding.launchGeneration).toBe("stale-generation");
+  });
+
   it("deliberate fresh replacement appends the named durable obligation read without an extra message", async () => {
     const seed = seedSession();
     await createOrchestrator().startNode(makeInput(seed, { startupActions: [makeIdentityAction()], includeDurableObligations: true }));

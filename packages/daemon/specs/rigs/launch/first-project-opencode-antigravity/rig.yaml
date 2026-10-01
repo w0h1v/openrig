@@ -1,0 +1,28 @@
+version: "0.2"
+name: first-project-opencode-antigravity
+summary: >
+  Two managed seats using opencode and antigravity. Set an explicit model on
+  each member before launch; no paid model is selected by this template.
+
+culture_file: CULTURE.md
+
+pods:
+  - id: dev
+    label: Project
+    members:
+      - id: owner
+        agent_ref: "local:../../../agents/development/implementer"
+        runtime: opencode
+        profile: native
+        cwd: "."
+      - id: check
+        agent_ref: "local:../../../agents/development/qa"
+        runtime: antigravity
+        profile: native
+        cwd: "."
+    edges:
+      - kind: delegates_to
+        from: owner
+        to: check
+
+edges: []

@@ -1,0 +1,34 @@
+
+                                                                                          nonbillable model review
+
+                                                                                          Context
+                                                                                          0 tokens
+                                                                                          0% used
+                                                                                          $0.00 spent
+
+                                                                                          LSP
+                                                                                               are disabled
+                                       Commands                                         esc
+
+                                       Search
+
+                                       Suggested
+                                       Share session
+                                       Switch session                              ctrl+x l
+                                       New session                                 ctrl+x n
+                                       Switch model                                ctrl+x m    etting started                ✕
+                                       Connect provider
+                                                                                               penCode includes free models
+                                       Session                                                 o you can start immediately.
+                                       Share session
+                                       Rename session                                ctrl+r    onnect from 75+ providers to
+                                       Jump to message                             ctrl+x g    se other models, including
+                                                                                               laude, GPT, Gemini etc
+
+                                                                                              Connect provider        /connect
+  ┃
+  ┃
+  ┃                                                                                       /private/tmp/openrig-review-opencode-
+  ┃  Build · Big Pickle OpenCode Zen                                                      home
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /private/tmp/openrig-review-opencode-home               tab agents  ctrl+p commands    • OpenCode 1.18.25

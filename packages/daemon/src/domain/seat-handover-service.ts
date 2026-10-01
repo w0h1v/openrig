@@ -262,6 +262,9 @@ export class SeatHandoverService {
     if (input.dryRun) {
       const planResult = this.planner.plan({ ...input, dryRun: true });
       if (planResult.ok) {
+        if (planResult.plan.source.mode === "discovered" && ["opencode", "antigravity"].includes(planResult.plan.seat.runtime ?? "")) {
+          return { ok: false, code: "source_not_supported", message: "Discovered native handover requires unsupported producer-generation rebinding.", guidance: "Use --source fresh or reconcile the existing managed seat." };
+        }
         return { ok: true, plan: planResult.plan };
       }
       switch (planResult.code) {
@@ -382,6 +385,14 @@ export class SeatHandoverService {
     // Already-created successor: route straight through the discovered->commit
     // path with nothing to unwind (byte-identical to the shipped behavior).
     if (parsed.source.mode === "discovered" && parsed.source.ref) {
+      if (node.runtime === "opencode" || node.runtime === "antigravity") {
+        return {
+          ok: false,
+          code: "source_not_supported",
+          message: `Discovered ${node.runtime} successors cannot be adopted: native conversation and producer-generation rebinding are not supported. The current occupant is unchanged.`,
+          guidance: "Use --source fresh to launch a verified managed successor, or reconcile this seat's existing managed conversation.",
+        };
+      }
       return this.finalizeWithDiscovered({
         seatRef: input.seatRef,
         status: statusResult.status,

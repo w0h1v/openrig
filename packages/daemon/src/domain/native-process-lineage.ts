@@ -14,7 +14,10 @@ export interface NativeProcessRow {
   startedAt?: string;
 }
 
-export type NativeRuntime = "claude-code" | "codex";
+export interface AntigravityLaunchIdentity { logPath: string; generation: string; sessionId?: string }
+export type AntigravityLaunchIdentityReader = (sessionName: string) => AntigravityLaunchIdentity | null;
+
+export type NativeRuntime = "claude-code" | "codex" | "opencode" | "antigravity";
 
 function tokens(command: string): string[] {
   return command.match(/"[^"]*"|'[^']*'|\S+/g)?.map((token) => token.replace(/^['"]|['"]$/g, "")) ?? [];
@@ -40,6 +43,36 @@ function commandUsesExpectedToken(command: string, runtime: NativeRuntime, expec
   }
 
   return codexResumeToken(args) === expectedToken;
+}
+
+/** Accept only the managed native invocation shape; a token in a prompt is not identity. */
+function additionalNativeArgs(row: NativeProcessRow, runtime: "opencode" | "antigravity"): string[] | null {
+  const argv = tokens(row.command);
+  const name = runtime === "opencode" ? "opencode" : "agy";
+  const osName = executableName(row.executableName ?? "");
+  if (osName === name && executableName(argv[0] ?? "") === name) return argv.slice(1);
+  return null;
+}
+
+function additionalNativeToken(args: string[], runtime: "opencode" | "antigravity"): string | null | undefined {
+  let index = 0;
+  if (runtime === "opencode") {
+    if (args[0] !== "attach" || !/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(args[1] ?? "")) return null;
+    index = 2;
+  }
+  let token: string | null = null;
+  const valueOptions = runtime === "opencode" ? ["--dir"] : ["--model", "--mode", "--effort", "--log-file", "--project", "--agent", "--add-dir"];
+  for (; index < args.length; index++) {
+    const arg = args[index]!;
+    if (valueOptions.includes(arg)) { if (!args[++index]) return null; continue; }
+    if (valueOptions.some(option => arg.startsWith(`${option}=`))) continue;
+    if (runtime === "antigravity" && ["--sandbox", "--dangerously-skip-permissions", "--new-project"].includes(arg)) continue;
+    const identity = runtime === "opencode" ? arg.match(/^--session(?:=(.*))?$/) : arg.match(/^--conversation(?:=(.*))?$/);
+    if (!identity || token !== null) return null;
+    token = identity[1] ?? args[++index] ?? null;
+    if (!token || token.startsWith("-")) return null;
+  }
+  return token ?? (runtime === "antigravity" ? undefined : null);
 }
 
 // undefined is a fresh command; null is a resume command without an exact token.
@@ -95,6 +128,7 @@ export function findExactNativeResumeProcess(
   expectedToken: string,
 ): NativeProcessRow | null {
   if (runtime === "codex") return selectNativeProcess(processes, panePid, expectedToken, true)?.process ?? null;
+  if (runtime === "opencode" || runtime === "antigravity") return selectNativeProcess(processes, panePid, expectedToken, true, runtime)?.process ?? null;
   if (runtime !== "claude-code") return null;
   const byParent = new Map<number, NativeProcessRow[]>();
   for (const process of processes) {
@@ -141,7 +175,7 @@ export type NativeProcessLister = () => NativeProcessRow[] | Promise<NativeProce
 type NativeProcessObservation = { panePid: number; process: NativeProcessRow; fingerprint: string };
 export type CodexProcessObservation = NativeProcessObservation;
 
-function selectNativeProcess(rows: NativeProcessRow[], panePid: number, expectedToken?: string | null, requireResume = false, runtime: NativeRuntime = "codex"): NativeProcessObservation | null {
+function selectNativeProcess(rows: NativeProcessRow[], panePid: number, expectedToken?: string | null, requireResume = false, runtime: NativeRuntime = "codex", launchIdentity?: AntigravityLaunchIdentity | null, expectedGeneration?: string | null): NativeProcessObservation | null {
   const byPid = new Map(rows.map((row) => [row.pid, row]));
   const root = byPid.get(panePid);
   if (byPid.size !== rows.length || !root?.startedAt || !root.tpgid || root.tpgid <= 0) return null;
@@ -149,8 +183,11 @@ function selectNativeProcess(rows: NativeProcessRow[], panePid: number, expected
   const executable = runtime === "claude-code" ? "claude" : "codex";
   for (const row of rows) {
     const osExecutable = runtime === "claude-code" ? executableName(row.executableName ?? "") : row.executableName;
-    if (osExecutable !== executable || executableName(tokens(row.command)[0] ?? "") !== executable
-      || row.pgid !== root.tpgid || row.tpgid !== root.tpgid) continue;
+    const additional = runtime === "opencode" || runtime === "antigravity";
+    if (additional ? additionalNativeArgs(row, runtime) === null
+      || additionalNativeToken(additionalNativeArgs(row, runtime)!, runtime) === null
+      : osExecutable !== executable || executableName(tokens(row.command)[0] ?? "") !== executable) continue;
+    if (row.pgid !== root.tpgid || row.tpgid !== root.tpgid) continue;
     const chain: NativeProcessRow[] = [];
     const visited = new Set<number>();
     let current: NativeProcessRow | undefined = row;
@@ -163,7 +200,17 @@ function selectNativeProcess(rows: NativeProcessRow[], panePid: number, expected
   }
   if (matches.length !== 1) return null;
   const { process, chain } = matches[0]!;
-  if (runtime === "claude-code") {
+  if (runtime === "opencode" || runtime === "antigravity") {
+    const args = additionalNativeArgs(process, runtime)!;
+    const token = additionalNativeToken(args, runtime);
+    if (runtime === "antigravity" && launchIdentity) {
+      const logArgs = args.flatMap((arg, index) => arg === "--log-file" ? [args[index + 1]] : arg.startsWith("--log-file=") ? [arg.slice(11)] : []);
+      if (!expectedGeneration || launchIdentity.generation !== expectedGeneration || logArgs.length !== 1 || logArgs[0] !== launchIdentity.logPath) return null;
+      if (token && token !== expectedToken) return null;
+      if (requireResume && !expectedToken) return null;
+      if (expectedToken && launchIdentity.sessionId !== expectedToken) return null;
+    } else if (runtime === "antigravity" || !expectedToken || token !== expectedToken) return null;
+  } else if (runtime === "claude-code") {
     if (!expectedToken || claudeSessionToken(tokens(process.command).slice(1)) !== expectedToken) return null;
   } else {
     const resumeToken = codexResumeToken(tokens(process.command).slice(1));
@@ -180,12 +227,14 @@ async function observeNativePaneProcess(input: {
   listProcesses?: NativeProcessLister;
   expectedToken?: string | null;
   requireResume?: boolean;
+  launchIdentity?: AntigravityLaunchIdentity | null;
+  expectedGeneration?: string | null;
 }, runtime: NativeRuntime): Promise<NativeProcessObservation | null> {
   try {
     const pid = await input.tmux.getPanePid(input.target);
     if (!pid) return null;
     const rows = await (input.listProcesses ?? listNativeProcesses)();
-    return selectNativeProcess(rows, pid, input.expectedToken, input.requireResume, runtime);
+    return selectNativeProcess(rows, pid, input.expectedToken, input.requireResume, runtime, input.launchIdentity, input.expectedGeneration);
   } catch { return null; }
 }
 
@@ -204,5 +253,16 @@ export async function verifyClaudePaneProcess(input: Parameters<typeof observeNa
   const first = await observeNativePaneProcess(input, "claude-code");
   if (!first) return null;
   const second = await observeNativePaneProcess(input, "claude-code");
+  return second?.fingerprint === first.fingerprint ? second : null;
+}
+
+export async function observeAdditionalNativePaneProcess(input: Parameters<typeof observeNativePaneProcess>[0], runtime: "opencode" | "antigravity"): Promise<NativeProcessObservation | null> {
+  return observeNativePaneProcess(input, runtime);
+}
+
+export async function verifyAdditionalNativePaneProcess(input: Parameters<typeof observeNativePaneProcess>[0], runtime: "opencode" | "antigravity"): Promise<NativeProcessObservation | null> {
+  const first = await observeAdditionalNativePaneProcess(input, runtime);
+  if (!first) return null;
+  const second = await observeAdditionalNativePaneProcess(input, runtime);
   return second?.fingerprint === first.fingerprint ? second : null;
 }

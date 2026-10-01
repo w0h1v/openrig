@@ -412,7 +412,8 @@ export class SeatLifecycleService {
     if (!pane.ok || pane.pane !== binding.tmuxPane) return { ok: false as const, code: "binding_changed", message: "The managed terminal binding changed; context was not delivered." };
     const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
     if (!adapter) return { ok: false as const, code: "runtime_adapter_missing", message: "The configured runtime adapter is unavailable." };
-    const ready = await adapter.checkReady({ ...binding, cwd: node.cwd ?? "." });
+    const launchGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid;
+    const ready = await adapter.checkReady({ ...binding, cwd: node.cwd ?? ".", launchGeneration });
     if (!ready.ready) return { ok: false as const, code: "attention_required", message: ready.reason ?? "Resolve the native prerequisite first." };
     const startup = this.readStartupContext(node.id, node.cwd ?? ".");
     if (!startup.ok) return startup.refusal;

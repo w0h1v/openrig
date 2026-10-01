@@ -120,6 +120,13 @@ export class RuntimeVerifier {
         case "claude-code": results.push(await this.verifyClaude()); break;
         case "codex": results.push(await this.verifyCodex()); break;
         case "pi": results.push(await this.verifyPi()); break;
+        case "opencode":
+        case "antigravity": {
+          const result = await this.verifyVersionOrHelp(runtime === "antigravity" ? "agy" : runtime, runtime);
+          this.persist(result);
+          results.push(result);
+          break;
+        }
         default: {
           const v = this.buildVerification(runtime, "not_found", null, null, `unknown runtime: ${runtime}`);
           this.persist(v);

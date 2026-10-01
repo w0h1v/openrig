@@ -12,7 +12,7 @@
 // MVP single-host context: filesystem-canonical; NO new SQLite tables;
 // library cache is in-memory at the daemon scope.
 
-export type AgentImageRuntime = "claude-code" | "codex";
+export type AgentImageRuntime = "claude-code" | "codex" | "opencode";
 
 export interface AgentImageManifest {
   name: string;

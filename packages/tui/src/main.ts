@@ -457,9 +457,10 @@ async function run(): Promise<void> {
     for (const ev of events) {
       inputRevision += 1; startup?.interacted();
       if (startup?.state.open && !view.get().palette) {
-        if (ev.type === "char" && ev.ch === "q") { void shutdown(); return; }
+        if (ev.type === "char" && ev.ch === "q" && startup.state.page !== "model") { void shutdown(); return; }
         if (ev.type === "char") void startup.key(ev.ch);
         else if (ev.type === "key") void startup.key(ev.key);
+        else if (ev.type === "paste" && startup.state.page === "model") { for (const ch of ev.text.replace(/[\r\n]/g, "")) void startup.key(ch); }
         else if (ev.type === "mouse" && lastScreen) {
           const hit = lastScreen.hitMap.find((h) => h.y === ev.y && ev.x >= h.x1 && ev.x <= h.x2);
           if (hit?.action.type === "startup") void startup.key(hit.action.key);

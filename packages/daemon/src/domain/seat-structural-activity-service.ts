@@ -45,7 +45,7 @@ export class SeatStructuralActivityService {
   private sweeping = false; // single-flight guard: one whole-fleet sweep at a time (MUST-FIX 2)
 
   constructor(
-    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent">,
+    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "getPaneCommand">>,
     private readonly now: () => Date = () => new Date(),
     private readonly captureLines: number = 20,
     private readonly staleAfterMs: number = DEFAULT_STRUCTURAL_STALE_MS,
@@ -67,9 +67,16 @@ export class SeatStructuralActivityService {
   /** Capture + structurally classify one seat's pane, caching the observation keyed by session name. A
    *  null or failed capture INVALIDATES the prior row (never leaves a stale positive verdict) and
    *  returns null (MUST-FIX 1). */
-  async pollSeat(sessionName: string): Promise<StructuralObservation | null> {
+  async pollSeat(sessionName: string, runtime?: string | null): Promise<StructuralObservation | null> {
+    const native = runtime === "opencode" || runtime === "antigravity";
     let content: string | null;
     try {
+      if (native) {
+        const command = await this.tmuxAdapter.getPaneCommand?.(sessionName);
+        if (!command || /^(?:bash|zsh|sh|fish|nu|tmux)$/.test(command)) {
+          this.latestBySession.delete(sessionName); return null;
+        }
+      }
       content = await this.tmuxAdapter.capturePaneContent(sessionName, this.captureLines);
     } catch {
       this.latestBySession.delete(sessionName);
@@ -79,7 +86,11 @@ export class SeatStructuralActivityService {
       this.latestBySession.delete(sessionName);
       return null;
     }
-    const c = classifyPaneActivity(content);
+    let c = classifyPaneActivity(content, runtime);
+    if (runtime === "opencode") {
+      const gate = /^\s*(?:connect a provider|permission required|allow once|allow always|allow for this session|allow execution)\s*[?:]?\s*$/im.exec(content);
+      if (gate) c = { state: "attention", reason: "native_input_required", evidence: gate[0] };
+    }
     const obs: StructuralObservation = {
       state: c.state,
       reason: c.reason,
@@ -98,7 +109,7 @@ export class SeatStructuralActivityService {
     this.sweeping = true;
     try {
       const rows = db.prepare(`
-        SELECT s.session_name as session_name
+        SELECT s.session_name as session_name, n.runtime as runtime, n.id as node_id
         FROM nodes n
         JOIN sessions s ON s.node_id = n.id
           AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
@@ -106,13 +117,19 @@ export class SeatStructuralActivityService {
         WHERE s.status = 'running'
           AND s.session_name IS NOT NULL
           AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
-      `).all() as Array<{ session_name: string }>;
+      `).all() as Array<{ session_name: string; runtime: string | null; node_id: string }>;
       const live = new Set(rows.map((r) => r.session_name));
       for (const s of Array.from(this.latestBySession.keys())) {
         if (!live.has(s)) this.latestBySession.delete(s); // release memory + never serve a stale read
       }
       await Promise.all(rows.map(async (r) => {
-        try { await this.pollSeat(r.session_name); } catch { /* isolate: one seat's failure never crashes the sweep */ }
+        try {
+          const native = r.runtime === "opencode" || r.runtime === "antigravity";
+          const generation = () => (db.prepare("SELECT generation_uuid FROM occupant_tenures WHERE node_id = ? ORDER BY generation_ordinal DESC LIMIT 1").get(r.node_id) as { generation_uuid: string } | undefined)?.generation_uuid;
+          const before = native ? generation() : undefined;
+          await this.pollSeat(r.session_name, r.runtime);
+          if (native && (!before || generation() !== before)) this.latestBySession.delete(r.session_name);
+        } catch { this.latestBySession.delete(r.session_name); /* isolate failed observations */ }
       }));
     } finally {
       this.sweeping = false;

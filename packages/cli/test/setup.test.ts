@@ -1062,3 +1062,15 @@ describe("codex_auth — provider-aware Codex readiness (#194)", () => {
     expect(codexAuthStep(result)?.status).toBe("skipped");
   });
 });
+
+describe("provider-only setup", () => {
+  it.each(["opencode", "antigravity"])("does not install or authenticate unused providers for %s", async runtime => {
+    const commands: string[] = [];
+    const base = makeDeps();
+    const result = await runSetup(makeDeps({ exec: cmd => { commands.push(cmd); return base.exec(cmd); } }), { runtime });
+    expect(commands.some(cmd => /claude|codex/.test(cmd))).toBe(false);
+    expect(commands).toContain(runtime === "opencode" ? "opencode --version" : "agy --version");
+    expect(result.steps.find(step => step.id === "native_runtime")?.message).toContain("have not been verified");
+    expect(result.runtimeConfig.every(item => item.runtime === "cmux" || item.runtime === runtime)).toBe(true);
+  });
+});

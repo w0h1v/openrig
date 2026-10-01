@@ -114,6 +114,8 @@ function tableRow(columns: AgentColumn[], cells: Partial<Record<AgentColumnKey, 
 function runtimeShort(runtime: string): string {
   if (/claude/i.test(runtime)) return "cl";
   if (/codex/i.test(runtime)) return "cx";
+  if (runtime === "opencode") return "oc";
+  if (runtime === "antigravity") return "ag";
   if (/terminal/i.test(runtime)) return ">_";
   if (/human/i.test(runtime)) return "hu";
   return runtime.slice(0, 2) || "—";
@@ -274,6 +276,10 @@ function agentDetailLines(
           fieldLine({ label: "meter", value: context == null ? "— (not yet known)" : `${context}% used  ${barCells(context / 100, meterWidth)}` }),
           fieldLine({ label: "tokens", value: `${number(agent.totalInputTokens)} input · ${number(agent.totalOutputTokens)} output · ${number(agent.contextWindowSize)} window` }),
           runtimeLine,
+          ...(["opencode", "antigravity"].includes(agent.runtime) ? [
+            ...wrapDetailValue("configured model", agent.model ?? "not configured", contentWidth),
+            fieldLine({ label: "observed model", value: "unknown (not served)" }),
+          ] : []),
           ...(agent.attach ? [fieldLine({ label: "attach", value: agent.attach })] : []),
           fieldLine({ label: "terminal", value: `term ▸ pod ${pod.name}`, link: { type: "act", act: "open-terminal", view: `pod:${rig.name}/${pod.name}` } }),
         ],

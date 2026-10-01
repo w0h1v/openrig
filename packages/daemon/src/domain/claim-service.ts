@@ -1,3 +1,4 @@
+import { verifyAdditionalNativePaneProcess, type AntigravityLaunchIdentityReader, type NativeProcessLister } from "./native-process-lineage.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -57,6 +58,9 @@ export interface ReconcileSessionOptions {
 }
 
 interface ClaimServiceDeps {
+  readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
+  listProcesses?: NativeProcessLister;
+  nativeSessionStores?: import("./resume-token-capture.js").ResumeTokenCaptureDeps["nativeSessionStores"];
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -104,6 +108,8 @@ interface CreateAndBindToPodOptions {
  */
 export class ClaimService {
   readonly db: Database.Database;
+  private readonly readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
+  private readonly listProcesses?: NativeProcessLister;
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private discoveryRepo: DiscoveryRepository;
@@ -113,6 +119,7 @@ export class ClaimService {
   private claudeContextProvisioner: ClaimServiceDeps["claudeContextProvisioner"] | null;
   private contextUsageStore: ClaimServiceDeps["contextUsageStore"] | null;
   private resumeTokenCapturer: ClaimServiceDeps["resumeTokenCapturer"] | null;
+  private nativeSessionStores: ClaimServiceDeps["nativeSessionStores"];
   private piRunnerStateStore: ClaimServiceDeps["piRunnerStateStore"] | null;
 
   constructor(deps: ClaimServiceDeps) {
@@ -120,6 +127,8 @@ export class ClaimService {
     if (deps.db !== deps.sessionRegistry.db) throw new Error("ClaimService: sessionRegistry must share the same db handle");
     if (deps.db !== deps.discoveryRepo.db) throw new Error("ClaimService: discoveryRepo must share the same db handle");
     if (deps.db !== deps.eventBus.db) throw new Error("ClaimService: eventBus must share the same db handle");
+    this.listProcesses = deps.listProcesses;
+    this.readAntigravityLaunchIdentity = deps.readAntigravityLaunchIdentity;
     this.db = deps.db;
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
@@ -130,7 +139,22 @@ export class ClaimService {
     this.claudeContextProvisioner = deps.claudeContextProvisioner ?? null;
     this.contextUsageStore = deps.contextUsageStore ?? null;
     this.resumeTokenCapturer = deps.resumeTokenCapturer ?? null;
+    this.nativeSessionStores = deps.nativeSessionStores;
     this.piRunnerStateStore = deps.piRunnerStateStore ?? null;
+  }
+
+  private async verifyAdditionalNativeAdoption(runtime: string | null | undefined, sessionName: string, pane: PaneBindingObservation): Promise<boolean> {
+    if (runtime !== "opencode" && runtime !== "antigravity") return true;
+    if (!pane.ok || !this.tmuxAdapter) return false;
+    const generation = this.sessionRegistry.currentOccupantGenerationForSession(sessionName);
+    if (!generation) return false;
+    const identity = await deriveResumeToken({ runtime, sessionName, generation }, { nativeSessionStores: this.nativeSessionStores });
+    if (identity.outcome !== "captured" || this.sessionRegistry.currentOccupantGenerationForSession(sessionName) !== generation) return false;
+    const proof = await verifyAdditionalNativePaneProcess({ target: pane.pane, tmux: this.tmuxAdapter,
+      expectedToken: identity.token, requireResume: true, listProcesses: this.listProcesses,
+      launchIdentity: runtime === "antigravity" ? this.readAntigravityLaunchIdentity?.(sessionName) : undefined,
+      expectedGeneration: generation }, runtime);
+    return !!proof && this.sessionRegistry.currentOccupantGenerationForSession(sessionName) === generation;
   }
 
   private async observeBindingPane(
@@ -234,10 +258,20 @@ export class ClaimService {
       // Derivation is the shared PURE helper (OPR.0.4.3.04 B2 — reused by the
       // seat-handover discovered-mode capture); persistence + events stay here so
       // FR-3's adoption provenance/audit semantics are unchanged.
+      const native = input.runtime === "opencode" || input.runtime === "antigravity";
+      const generation = this.sessionRegistry.currentOccupantGenerationForSession(input.sessionName);
+      if (native && !generation) {
+        this.emitCaptureSkip(input, input.runtime!, "missing_sidecar");
+        return;
+      }
       const derived = await deriveResumeToken(
-        { runtime: input.runtime, sessionName: input.sessionName },
-        { contextUsageStore: this.contextUsageStore, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore },
+        { runtime: input.runtime, sessionName: input.sessionName, generation: generation ?? undefined },
+        { contextUsageStore: this.contextUsageStore, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore, nativeSessionStores: this.nativeSessionStores },
       );
+      if (native && this.sessionRegistry.currentOccupantGenerationForSession(input.sessionName) !== generation) {
+        this.emitCaptureSkip(input, input.runtime!, "missing_sidecar");
+        return;
+      }
       if (derived.outcome === "exempt" || derived.outcome === "noop") return;
       const runtime = input.runtime as string; // non-null past exempt
       if (derived.outcome === "skipped") {
@@ -310,6 +344,10 @@ export class ClaimService {
       return { ok: false, code: "already_bound", error: `Logical ID '${opts.logicalId}' is already bound` };
     }
 
+    if ([node.runtime, discovered.runtimeHint].some(runtime => runtime === "opencode" || runtime === "antigravity")) {
+      return { ok: false, code: "runtime_unverified", error: "Discovered native adoption is unsupported: producer-generation rebinding is unavailable. Reconcile the existing managed seat or launch a fresh seat." };
+    }
+
     const discoveredRuntime = discovered.runtimeHint === "unknown" || discovered.runtimeHint === "terminal"
       ? null
       : discovered.runtimeHint;
@@ -325,6 +363,8 @@ export class ClaimService {
       discovered.tmuxSession,
       discovered.tmuxPane,
     );
+
+    if (!await this.verifyAdditionalNativeAdoption(node.runtime, discovered.tmuxSession, paneObservation)) return { ok: false, code: "runtime_unverified", error: "Native runtime and exact session identity could not be verified; the seat was not adopted." };
 
     const bindTx = this.db.transaction(() => {
       this.persistPaneBinding(
@@ -519,22 +559,42 @@ export class ClaimService {
       projectionDrift.push(`cwd unverified: node declares "${nodeRow.cwd}"; the live pane's cwd is not provable without injecting input`);
     }
 
-    // 4. The DB portion of bind, reconcile-shaped: supersede stale session
-    // rows for THIS node, upsert the binding to the live session, register a
-    // fresh claimed-session row (status running), emit node.reconciled — one tx.
+    // Reconcile reattaches the same verified native occupant; its running hook
+    // producer cannot adopt a newly minted generation without being relaunched.
+    const nativeContinuation = nodeRow.runtime === "opencode" || nodeRow.runtime === "antigravity"
+      ? this.db.prepare("SELECT id FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY id DESC LIMIT 1").get(nodeRow.id, sessionName) as { id: string } | undefined
+      : undefined;
+    if ((nodeRow.runtime === "opencode" || nodeRow.runtime === "antigravity") && !nativeContinuation) {
+      return { ok: false, code: "reconcile_error", message: "No managed native occupant exists for this node and session; reconciliation cannot adopt another conversation." };
+    }
+    const continuationGeneration = nativeContinuation
+      ? this.sessionRegistry.currentOccupantTenure(nodeRow.id)?.generationUuid : undefined;
+    if (!await this.verifyAdditionalNativeAdoption(nodeRow.runtime, sessionName, paneObservation)) return { ok: false, code: "reconcile_error", message: "Native runtime and exact session identity could not be verified; the seat was not adopted." };
+
+    // 4. Reattach in one transaction. Native runtimes retain the verified
+    // session and producer tenure; legacy runtimes keep claimed-row semantics.
+    // Supersede only other running rows and emit node.reconciled.
     try {
       let sessionId = "";
       let persistedEvent: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
       const tx = this.db.transaction(() => {
+        if (nativeContinuation && (!continuationGeneration || this.sessionRegistry.currentOccupantTenure(nodeRow!.id)?.generationUuid !== continuationGeneration)) {
+          throw new Error("Native occupant changed during reconciliation; retry against the current occupant.");
+        }
         const stale = this.db
           .prepare("SELECT id FROM sessions WHERE node_id = ? AND status = 'running'")
           .all(nodeRow!.id) as Array<{ id: string }>;
         for (const row of stale) {
-          this.sessionRegistry.markSuperseded(row.id);
+          if (row.id !== nativeContinuation?.id) this.sessionRegistry.markSuperseded(row.id);
         }
         this.persistPaneBinding(nodeRow!.id, sessionName, paneObservation);
-        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName);
-        sessionId = session.id;
+        if (nativeContinuation) {
+          sessionId = nativeContinuation.id;
+          this.sessionRegistry.updateStatus(sessionId, "running");
+          this.sessionRegistry.updateStartupStatus(sessionId, "ready");
+        } else {
+          sessionId = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName).id;
+        }
         persistedEvent = this.eventBus.persistWithinTransaction({
           type: "node.reconciled",
           rigId: nodeRow!.rig_id,
@@ -627,6 +687,10 @@ export class ClaimService {
       return { ok: false, code: "not_active", error: `Discovery record is ${discovered.status}, not active` };
     }
 
+    if (discovered.runtimeHint === "opencode" || discovered.runtimeHint === "antigravity") {
+      return { ok: false, code: "runtime_unverified", error: "Discovered native adoption is unsupported: producer-generation rebinding is unavailable. Reconcile the existing managed seat or launch a fresh seat." };
+    }
+
     const rig = this.rigRepo.getRig(opts.rigId);
     if (!rig) {
       return { ok: false, code: "rig_not_found", error: "Target rig not found" };
@@ -664,6 +728,8 @@ export class ClaimService {
       discovered.tmuxSession,
       discovered.tmuxPane,
     );
+
+    if (!await this.verifyAdditionalNativeAdoption(discoveredRuntime, discovered.tmuxSession, paneObservation)) return { ok: false, code: "runtime_unverified", error: "Native runtime and exact session identity could not be verified; the seat was not adopted." };
 
     const claimTx = this.db.transaction(() => {
       const node = this.rigRepo.addNode(opts.rigId, logicalId, {

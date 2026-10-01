@@ -10,8 +10,11 @@ import { demoSnapshot } from "../src/demo-data.js";
 import { renderScreen } from "../src/render.js";
 import { createViewState } from "../src/state.js";
 
-function renderAgentDetail(name: string): string {
+function renderAgentDetail(name: string, runtime?: string, cols = 140): string {
   const snap = demoSnapshot();
+  if (runtime) {
+    for (const host of snap.hosts) for (const rig of host.rigs) for (const pod of rig.pods) for (const agent of pod.agents) if (agent.name === name) { agent.runtime = runtime; agent.model = "openrouter/vendor/a-long-concrete-model-name"; agent.context = null; }
+  }
   const view = createViewState({ instanceId: "t", getSnapshot: () => snap });
   view.dispatch({
     type: "drill",
@@ -19,7 +22,7 @@ function renderAgentDetail(name: string): string {
     name,
     target: { host: "vm-host", rig: "openrig-build", pod: "dev50" },
   });
-  return renderScreen(view.get(), snap, { cols: 140, rows: 34 }).lines.join("\n");
+  return renderScreen(view.get(), snap, { cols, rows: 48 }).lines.join("\n");
 }
 
 describe("agent-detail runtime field renders the NAME as the value (founder rule a4c9548a)", () => {
@@ -32,4 +35,14 @@ describe("agent-detail runtime field renders the NAME as the value (founder rule
     const out = renderAgentDetail("dev50.guard");
     expect(out).toMatch(/runtime:\s+codex/);
   });
+});
+
+it.each(["opencode", "antigravity"])("shows %s configured model separately from unobserved effective model", runtime => {
+  const out = renderAgentDetail("dev50.driver", runtime);
+  expect(out).toContain(runtime);
+  expect(out).toContain("openrouter/vendor/a-long-concrete-model-name");
+  expect(out).toContain("observed model");
+  expect(out).toContain("unknown (not served)");
+  expect(out).toContain("CONTEXT · unknown");
+  expect(renderAgentDetail("dev50.driver", runtime, 80)).toContain("configured model");
 });

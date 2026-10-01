@@ -1,3 +1,4 @@
+import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import os from "node:os";
 import nodePath from "node:path";
 import { execFile } from "node:child_process";
@@ -29,6 +30,7 @@ export interface ResumeRefreshSession {
 }
 
 interface ResumeMetadataRefresherDeps {
+  nativeSessionStores?: ResumeTokenCaptureDeps["nativeSessionStores"];
   sessionRegistry: SessionRegistry;
   tmuxAdapter: TmuxAdapter;
   listProcesses?: () => Array<{ pid: number; ppid: number; command: string }> | Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -47,6 +49,7 @@ interface ResumeMetadataRefresherDeps {
 }
 
 export class ResumeMetadataRefresher {
+  private nativeSessionStores: ResumeTokenCaptureDeps["nativeSessionStores"];
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
   private listProcesses: () => Array<{ pid: number; ppid: number; command: string }> | Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -58,6 +61,7 @@ export class ResumeMetadataRefresher {
   private contextUsageStore: ResumeMetadataRefresherDeps["contextUsageStore"] | null;
 
   constructor(deps: ResumeMetadataRefresherDeps) {
+    this.nativeSessionStores = deps.nativeSessionStores;
     this.sessionRegistry = deps.sessionRegistry;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
@@ -119,6 +123,16 @@ export class ResumeMetadataRefresher {
     // on a recurring tick it multiplied `ps` spawns per seat, forever.
     const captureOpts = { attempts: fillNullOnly ? 1 : undefined, listProcesses: opts?.listProcesses };
     for (const session of sessions) {
+      if (session.runtime === "opencode" || session.runtime === "antigravity") {
+        const generation = this.sessionRegistry.currentOccupantGenerationForSession(session.sessionName);
+        if (!generation) continue;
+        const derived = await deriveResumeToken({ ...session, generation }, { nativeSessionStores: this.nativeSessionStores });
+        if (this.sessionRegistry.currentOccupantGenerationForSession(session.sessionName) === generation
+          && derived.outcome === "captured" && (!session.resumeToken || session.resumeToken === derived.token)) {
+          this.sessionRegistry.updateResumeToken(session.sessionId, derived.resumeType, derived.token, "scrape");
+        }
+        continue;
+      }
       if (session.runtime === "codex") {
         if (session.resumeToken) {
           // OPR.0.4.3.20 FR-6.1 — lightweight equal-value freshness RE-STAMP on the

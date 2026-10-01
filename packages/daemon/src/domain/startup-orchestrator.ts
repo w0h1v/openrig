@@ -151,6 +151,9 @@ export class StartupOrchestrator {
           : "fresh";
     let appliedLaunch: AppliedLaunchObservation | undefined;
     const launchGeneration = this.sessionRegistry.currentOccupantTenure(input.nodeId)?.generationUuid;
+    // Every adapter phase must use the ledger's current occupant, never a caller's
+    // stale launch marker. Copy the binding so callers retain their own snapshot.
+    input = { ...input, binding: { ...input.binding, launchGeneration } };
 
     // 1. Mark pending
     this.sessionRegistry.updateStartupStatus(input.sessionId, "pending");
@@ -166,7 +169,7 @@ export class StartupOrchestrator {
     // 2. Project resources
     let projectionResult: ProjectionResult;
     try {
-      projectionResult = await input.adapter.project(input.plan, input.binding);
+      projectionResult = await input.adapter.project(input.preserveStartupContext ? { ...input.plan, preserveRuntimeSettings: true } : input.plan, input.binding);
       if (projectionResult.failed.length > 0) {
         for (const f of projectionResult.failed) {
           errors.push(`Projection failed for ${f.effectiveId}: ${f.error}`);

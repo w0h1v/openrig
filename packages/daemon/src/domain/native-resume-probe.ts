@@ -1,3 +1,5 @@
+import { classifyOpenCodePrompt } from "../adapters/opencode-runner-protocol.js";
+import { classifyAntigravityPrompt } from "../adapters/antigravity-runtime-adapter.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { codexPostureArg } from "../adapters/yolo-mode.js";
 
@@ -80,6 +82,17 @@ export function assessNativeResumeProbe(
   const runtime = input.runtime ?? "";
   const paneCommand = input.paneCommand ?? "";
   const paneContent = input.paneContent ?? "";
+
+  if (runtime === "opencode" || runtime === "antigravity") {
+    if (/sign in|login with|log in with|API key|How would you like to authenticate/i.test(paneContent)) return { status: "attention_required", code: "login_required", detail: "Native authentication requires operator input." };
+    if (/trust this folder|trust the files|Do you trust/i.test(paneContent)) return { status: "attention_required", code: "trust_gate", detail: "Native workspace trust requires operator input." };
+    if (/permission required|Allow .*tool|Do you want to (?:proceed|allow)/i.test(paneContent)) return { status: "attention_required", code: "permission_prompt", detail: "Native permission prompt requires operator input." };
+    const foreground = !!paneCommand && !/^-?(?:bash|zsh|sh|fish|dash|tmux)$/.test(paneCommand);
+    const empty = runtime === "opencode" ? classifyOpenCodePrompt(paneContent) === "empty" : classifyAntigravityPrompt(paneContent).ready;
+    return foreground && empty
+      ? { status: "resumed", code: "native_prompt_ready", detail: "Native terminal input is available; conversation identity must be checked separately." }
+      : { status: "inconclusive", code: "native_prompt_unverified", detail: "Native terminal input is not confirmed empty and ready." };
+  }
 
   if (runtime === "claude-code") {
     if (paneContent.includes("No conversation found")) {

@@ -339,8 +339,8 @@ export function contextPacksRoutes(): Hono {
       return c.json({ error: "invalid_situation", message: `situation must be fresh | handover | post-compaction (got: ${situation ?? "(missing)"})` }, 400);
     }
     const runtime = c.req.query("runtime");
-    if (runtime !== "claude" && runtime !== "codex") {
-      return c.json({ error: "invalid_runtime", message: `runtime must be claude | codex (got: ${runtime ?? "(missing)"})` }, 400);
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "opencode" && runtime !== "antigravity") {
+      return c.json({ error: "invalid_runtime", message: `runtime must be claude | codex | opencode | antigravity (got: ${runtime ?? "(missing)"})` }, 400);
     }
     const budgetRaw = c.req.query("budget");
     let budgetTokens: number | undefined;

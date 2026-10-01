@@ -1,3 +1,4 @@
+import type { AntigravityLaunchIdentityReader } from "./native-process-lineage.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -124,6 +125,7 @@ export interface NarrowLaunchResult {
 }
 
 interface RestoreOrchestratorDeps {
+  readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -138,6 +140,7 @@ interface RestoreOrchestratorDeps {
   /** OPR.0.4.6.PI1 FR-6 — optional so older wiring/tests keep working; a Pi
    *  resume without the adapter falls through to the honest no-adapter error. */
   piResume?: PiResumeAdapter;
+  nativeRuntimeAdapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -156,8 +159,10 @@ export class RestoreOrchestrator {
   private claudeResume: ClaudeResumeAdapter;
   private codexResume: CodexResumeAdapter;
   private piResume: PiResumeAdapter | null;
+  private nativeRuntimeAdapters: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
+  private readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
   private appliedLaunchStore: AppliedLaunchObservationStore;
 
@@ -195,9 +200,11 @@ export class RestoreOrchestrator {
     this.claudeResume = deps.claudeResume;
     this.codexResume = deps.codexResume;
     this.piResume = deps.piResume ?? null;
+    this.nativeRuntimeAdapters = deps.nativeRuntimeAdapters ?? {};
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
+    this.readAntigravityLaunchIdentity = deps.readAntigravityLaunchIdentity;
     this.appliedLaunchStore = new AppliedLaunchObservationStore(deps.db);
   }
 
@@ -1498,6 +1505,7 @@ export class RestoreOrchestrator {
       expectedResumeToken: resumeToken,
       requireExactResumeLineage: true,
       ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}),
+      readAntigravityLaunchIdentity: this.readAntigravityLaunchIdentity,
     });
     if (!identity.ok) {
       return {
@@ -1626,12 +1634,35 @@ export class RestoreOrchestrator {
     try {
       const selection = new NativePermissionStore(this.db).read(nodeId);
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
-        : this.codexResume.canResume(resumeType, resumeToken) ? "codex" : "pi";
+        : this.codexResume.canResume(resumeType, resumeToken) ? "codex"
+        : resumeType === "opencode_id" ? "opencode" : resumeType === "antigravity_id" ? "antigravity" : "pi";
       if (selection && selection.runtime !== runtime) throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
       const override = permissionBindingOverride(selection);
       resolvedPosture = override.launchPosture ?? resolvedPosture;
       permissionMode = override.permissionMode;
     } catch (error) { return { kind: "failed", message: `Permission selection: ${(error as Error).message}` }; }
+    if (resumeType === "opencode_id" || resumeType === "antigravity_id") {
+      const runtime = resumeType === "opencode_id" ? "opencode" : "antigravity";
+      const adapter = this.nativeRuntimeAdapters[runtime];
+      const binding = this.sessionRegistry.getBindingForNode(nodeId);
+      if (!adapter || !binding || !resumeToken) return { kind: "failed", message: "Native restore adapter, binding, or session identity is unavailable." };
+      const nativeBinding = { ...binding, cwd, model: model ?? undefined, permissionMode, launchPosture: resolvedPosture, launchGeneration };
+      const result = await adapter.launchHarness(nativeBinding, { name: sessionName, resumeToken });
+      if (!result.ok) return result.recovery === "attention_required"
+        ? { kind: "attention_required", message: result.error, evidence: result.evidence }
+        : { kind: "failed", message: result.error };
+      if (result.resumeToken !== resumeToken || result.resumeType !== resumeType) return { kind: "failed", message: "Native runtime did not confirm the requested conversation." };
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const ready = await adapter.checkReady(nativeBinding);
+        if (ready.ready) {
+          if (result.appliedLaunch && launchGeneration) this.appliedLaunchStore.recordGeneration(launchGeneration, result.appliedLaunch);
+          return { kind: "resumed" };
+        }
+        if (ready.code && ["login_required", "trust_gate", "native_runtime_failed", "native_error"].includes(ready.code)) return { kind: "attention_required", message: ready.reason ?? ready.code };
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      return { kind: "attention_required", message: "Native conversation started but readiness could not be verified." };
+    }
     if (this.claudeResume.canResume(resumeType, resumeToken)) {
       const result = await this.claudeResume.resume(sessionName, resumeType, resumeToken, cwd, resolvedPosture, model, permissionMode, nodeId);
       if (result.ok) {
@@ -1811,6 +1842,7 @@ export class RestoreOrchestrator {
       expectedResumeToken,
       requireExactResumeLineage: true,
       ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}),
+      readAntigravityLaunchIdentity: this.readAntigravityLaunchIdentity,
     });
     if (!identity.ok) {
       return { ok: false, code: "process_lineage_mismatch", detail: identity.detail };
@@ -1818,9 +1850,9 @@ export class RestoreOrchestrator {
     const paneCommand = await this.tmuxAdapter.getPaneCommand(identity.pane);
     const paneContent = (await this.tmuxAdapter.capturePaneContent(identity.pane, 40)) ?? "";
     const probe = assessNativeResumeProbe({ runtime, paneCommand, paneContent });
-    const fgProcess = runtime === "claude-code" ? "claude" as const : runtime === "codex" ? "codex" as const : null;
+    const fgProcess = runtime === "claude-code" ? "claude" as const : runtime === "codex" ? "codex" as const : runtime === "opencode" ? "opencode" : runtime === "antigravity" ? "agy" : null;
     if (!fgProcess) {
-      return { ok: false, code: "fg_process_not_runtime", detail: `Node runtime is ${runtime ?? "unknown"}, not claude/codex.` };
+      return { ok: false, code: "fg_process_not_runtime", detail: `Node runtime is ${runtime ?? "unknown"}, not a supported native runtime.` };
     }
 
     // Precondition #4: pane is at a usable/idle state — explicitly NOT a

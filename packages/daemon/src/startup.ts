@@ -419,6 +419,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const seatActivityService = new SeatActivityService({
     tmux: tmuxAdapter,
     defaultWindowSeconds: 3,
+    structuralReader: sessionName => seatStructuralActivityService.getStructuralActivity(sessionName),
     eventBus,
     // S19 — the Claude self-report rung (pid.json), consulted per sweep for seats whose
     // declared inventory staffs it; unreadable = null = the ladder falls, never errors.
@@ -436,6 +437,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // the registered binding and persists the verdict so node-inventory can gate
   // the running/active green derivations. Started post-bind in index.ts.
   const seatIdentityReconciler = new SeatIdentityReconciler({
+    readAntigravityLaunchIdentity: sessionName => antigravityAdapter.readLaunchIdentity(sessionName),
     db,
     tmux: tmuxAdapter,
   });
@@ -548,9 +550,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const composeAdapter = new ComposeServicesAdapter(opts?.tmuxExec ?? execCommand);
   const serviceOrchestrator = new ServiceOrchestrator({ rigRepo, composeAdapter });
 
+  const nativeRuntimeAdapters: Record<string, import("./domain/runtime-adapter.js").RuntimeAdapter> = {};
   const restoreOrchestrator = new RestoreOrchestrator({
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
-    checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume,
+    checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, nativeRuntimeAdapters,
+    readAntigravityLaunchIdentity: sessionName => antigravityAdapter.readLaunchIdentity(sessionName),
     transcriptStore, serviceOrchestrator,
   });
 
@@ -678,6 +682,27 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
   const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
+  const { OpenCodeRuntimeAdapter } = await import("./adapters/opencode-runtime-adapter.js");
+  const { AntigravityRuntimeAdapter } = await import("./adapters/antigravity-runtime-adapter.js");
+  const nativeFsOps = {
+    readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+    writeFile: (p: string, content: string) => fs.writeFileSync(p, content, { encoding: "utf-8", mode: 0o600 }),
+    exists: (p: string) => fs.existsSync(p),
+    mkdirp: (p: string) => { fs.mkdirSync(p, { recursive: true, mode: 0o700 }); },
+    listFiles: (dir: string): string[] => fs.readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile()).map(entry => nodePath.relative(dir, nodePath.join(entry.parentPath, entry.name))),
+  };
+  const recordNativeProjection = (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() });
+  const opencodeAdapter = new OpenCodeRuntimeAdapter({ tmux: tmuxAdapter, fsOps: nativeFsOps,
+    stateRoot: nodePath.join(OPENRIG_HOME, "state", "opencode"),
+    runnerEntryPath: nodePath.resolve(import.meta.dirname, "./adapters/opencode-runner.js"), recordProjection: recordNativeProjection });
+  const antigravityAdapter = new AntigravityRuntimeAdapter({ tmux: tmuxAdapter, fsOps: nativeFsOps,
+    stateRoot: nodePath.join(OPENRIG_HOME, "state", "antigravity"),
+    activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/antigravity-activity-relay.cjs"),
+    recordProjection: recordNativeProjection });
+  Object.assign(nativeRuntimeAdapters, { opencode: opencodeAdapter, "antigravity": antigravityAdapter });
+  const nativeSessionStores = { opencode: opencodeAdapter, "antigravity": antigravityAdapter };
+
   const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, claudeManagedLaunch, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: (src: string, dest: string) => fs.copyFileSync(src, dest), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), claudeHooksManifestPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json"), recordProjection: (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() }) });
   const codexAdapter = new CodexRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH), activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
@@ -867,7 +892,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db, rigRepo, podRepo,
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
     fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
-    adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    adapters: { ...nativeRuntimeAdapters, "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     tmuxAdapter,
     agentImageLibrary,
     continuityPolicyMaterializer,
@@ -996,8 +1021,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   });
   // OPR.0.4.3.20 FR-4 — inject contextUsageStore so refresh() can null-fill a
   // Claude token from the sidecar during periodic/manual snapshot refresh.
-  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore });
+  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, nativeSessionStores });
   const claimService = new ClaimService({
+    readAntigravityLaunchIdentity: sessionName => antigravityAdapter.readLaunchIdentity(sessionName),
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter, transcriptStore,
     claudeContextProvisioner: claudeAdapter,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps
@@ -1006,6 +1032,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     resumeTokenCapturer: resumeMetadataRefresher,
     // OPR.0.4.6.PI1 FR-6 — pi-runner sidecar reader (the adapter exposes it).
     piRunnerStateStore: piAdapter,
+    nativeSessionStores,
   });
   const selfAttachService = new SelfAttachService({
     db, rigRepo, podRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
@@ -1038,6 +1065,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   });
   const { SeatAttentionReconciler } = await import("./domain/seat-attention-reconciler.js");
   const seatAttentionReconciler = new SeatAttentionReconciler({
+    readAntigravityLaunchIdentity: sessionName => antigravityAdapter.readLaunchIdentity(sessionName),
     sessionRegistry, eventBus, agentActivityStore, db, tmux: tmuxAdapter,
     reconcileRestoreOutcome: (rigId, nodeId) => restoreOrchestrator.reconcileNodeRuntimeTruth(rigId, nodeId),
     sendVerify: async (session, text, opts) => {
@@ -1119,7 +1147,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     }),
     podInstantiator,
     podBundleSourceResolver,
-    runtimeAdapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    runtimeAdapters: { ...nativeRuntimeAdapters, "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     transcriptStore,
     sessionTransport: (() => {
       const t = new SessionTransport({

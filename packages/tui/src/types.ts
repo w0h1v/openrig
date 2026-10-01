@@ -8,7 +8,7 @@ export interface AgentRow {
   nodeId?: string;
   name: string;
   runtime: string;
-  /** effective served model; separate from runtime, null when not served */
+  /** Configured seat model, not proof of the effective native model. */
   model?: string | null;
   spec: string;
   profile?: string | null;

@@ -10,7 +10,7 @@
 // actually resume" probe is intentionally out of scope (heavy + must not
 // mutate live state); format validation is the safe, side-effect-free floor.
 
-export type ResumeType = "claude_id" | "codex_id" | "pi_session_file";
+export type ResumeType = "claude_id" | "codex_id" | "opencode_id" | "antigravity_id" | "pi_session_file";
 
 export interface ResumeTokenValidationOk {
   ok: true;
@@ -50,6 +50,8 @@ export function resumeTypeForRuntime(runtime: string | null): ResumeType | null 
   if (runtime === "claude-code") return "claude_id";
   if (runtime === "codex") return "codex_id";
   if (runtime === "pi") return "pi_session_file";
+  if (runtime === "opencode") return "opencode_id";
+  if (runtime === "antigravity") return "antigravity_id";
   return null;
 }
 
@@ -96,7 +98,7 @@ export function validateResumeToken(
   if (!resumeType) {
     return {
       ok: false,
-      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, and pi have resume tokens).`,
+      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, opencode, and antigravity have resume tokens).`,
     };
   }
   if (typeof rawToken !== "string") {
@@ -109,5 +111,7 @@ export function validateResumeToken(
   if (resumeType === "pi_session_file") {
     return validatePiSessionFileToken(token);
   }
+  if (resumeType === "opencode_id" && !/^ses_[a-zA-Z0-9]+$/.test(token)) return { ok: false, error: "Invalid OpenCode session ID format." };
+  if (resumeType === "antigravity_id" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(token)) return { ok: false, error: "Invalid Antigravity conversation UUID format." };
   return validateIdShapedToken(resumeType, token);
 }

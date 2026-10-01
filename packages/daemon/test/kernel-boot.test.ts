@@ -330,3 +330,12 @@ describe("probeCodexReadiness — the kernel's Codex probe (#194)", () => {
     tracker.stop();
   });
 });
+
+it("keeps new providers explicit without changing the automatic kernel preference", async () => {
+  const { kernelVariant, runtimeAvailable } = await import("../src/domain/kernel-boot.js");
+  const probe = { claudeCode: "unavailable", codex: "unavailable", opencode: "ok", antigravity: "ok" } as const;
+  expect(kernelVariant("opencode")).toBe("rig-opencode-only.yaml");
+  expect(kernelVariant("antigravity")).toBe("rig-antigravity-only.yaml");
+  expect(runtimeAvailable(probe, "opencode")).toBe(true);
+  expect(selectVariant({ ...probe, codex: "ok" })).toBe("rig-codex-only.yaml");
+});

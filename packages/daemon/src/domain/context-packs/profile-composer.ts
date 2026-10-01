@@ -32,7 +32,7 @@ export class ProfileComposeError extends Error {
 }
 
 export type ComposeSituation = "fresh" | "handover" | "post-compaction";
-export type ComposeRuntime = "claude" | "codex";
+export type ComposeRuntime = "claude" | "codex" | "opencode" | "antigravity";
 export type SourceKind = "library" | "project" | "seat" | "mission";
 
 export interface ComposeInput {

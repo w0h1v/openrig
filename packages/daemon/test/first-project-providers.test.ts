@@ -1,3 +1,4 @@
+import { parse, stringify } from "yaml";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -91,6 +92,36 @@ describe("first-project provider choices", () => {
       }
     });
   }
+
+  it.each(["first-project-opencode", "first-project-antigravity", "first-project-opencode-antigravity"])("%s requires explicit models and probes only selected runtimes", async (name) => {
+    const root = join(specs, "rigs/launch", name);
+    const yaml = readFileSync(join(root, "rig.yaml"), "utf8");
+    const cwd = join(tmpdir(), "native-starter-repository");
+    const missing = await rigPreflight({ rigSpecYaml: yaml, rigRoot: root, cwdOverride: cwd, fsOps });
+    expect(missing.ready).toBe(false);
+    expect(missing.errors).toHaveLength(2);
+    expect(missing.errors.every(error => /model/i.test(error))).toBe(true);
+    const document = parse(yaml);
+    for (const member of document.pods[0].members) member.model = member.runtime === "opencode" ? "openrouter/example/test-model" : "example-native-model";
+    const configured = stringify(document);
+    const exec = vi.fn(async () => "available");
+    const ready = await rigPreflight({ rigSpecYaml: configured, rigRoot: root, cwdOverride: cwd, fsOps, exec });
+    expect(ready.errors).toEqual([]);
+    const runtimes = new Set(document.pods[0].members.map((member: { runtime: string }) => member.runtime));
+    expect(exec.mock.calls.map(call => (call as unknown as string[])[0]).sort()).toEqual([...runtimes].map(runtime => runtime === "opencode" ? "opencode --version" : "agy --version").sort());
+    const spec = RigSpecSchema.normalize(RigSpecCodec.parse(configured) as Record<string, unknown>);
+    for (const member of spec.pods[0]!.members) {
+      const agent = resolveAgentRef(member.agentRef, root, fsOps);
+      if (!agent.ok) throw new Error(JSON.stringify(agent));
+      const resolved = resolveNodeConfig({ baseSpec: agent.resolved, importedSpecs: agent.imports, collisions: agent.collisions,
+        profileName: member.profile, specRoot: root, cwdOverride: cwd, homedir: homedir(), systemSkills: [], member, pod: spec.pods[0]!, rig: spec });
+      if (!resolved.ok) throw new Error(resolved.errors.join("\n"));
+      const projection = planProjection({ config: resolved.config, collisions: agent.collisions, fsOps });
+      if (!projection.ok) throw new Error(projection.errors.join("\n"));
+      expect(projection.plan.entries.filter(entry => ["plugin", "runtime_resource"].includes(entry.category))).toEqual([]);
+      expect(resolved.config.model).toBe(member.model);
+    }
+  });
 
   it("an absent unused provider selects the matching kernel, while both available select mixed", () => {
     expect(selectVariant({ claudeCode: "ok", codex: "unavailable" })).toBe("rig-claude-only.yaml");

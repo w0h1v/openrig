@@ -17,6 +17,14 @@ profiles:
       plugins: [shared:openrig-core]
       runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
 
+  native:
+    uses:
+      skills: [development-team, test-driven-development, systematic-debugging, verification-before-completion]
+      guidance: []
+      subagents: []
+      plugins: []
+      runtime_resources: []
+
 resources:
   guidance:
     - id: role

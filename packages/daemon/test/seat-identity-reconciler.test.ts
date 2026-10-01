@@ -435,3 +435,11 @@ describe("SeatIdentityReconciler — bounded polling", () => {
     } finally { rec.stop(); db.close(); }
   });
 });
+
+it("recognizes new native runtime contradictions and dead shell panes", () => {
+  expect(classifyPaneRuntimeMatch("zsh", "opencode")).toBe("mismatch");
+  expect(classifyPaneRuntimeMatch("-bash", "antigravity")).toBe("mismatch");
+  expect(classifyPaneRuntimeMatch("codex", "opencode")).toBe("mismatch");
+  expect(classifyPaneRuntimeMatch("opencode", "antigravity")).toBe("mismatch");
+  expect(classifyPaneRuntimeMatch("agy", "antigravity")).toBe("match");
+});

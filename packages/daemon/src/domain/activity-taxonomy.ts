@@ -104,7 +104,7 @@ export interface RungDeclaration {
  *  never inherits its predecessor's rung authority. */
 export interface AdapterRungInventory {
   adapterId: string;
-  runtime: "claude-code" | "codex" | "tmux-generic";
+  runtime: "claude-code" | "codex" | "opencode" | "antigravity" | "tmux-generic";
   rungs: RungDeclaration[];
 }
 
@@ -192,5 +192,14 @@ export const TMUX_GENERIC_RUNG_INVENTORY: AdapterRungInventory = {
 export function runtimeRungInventory(runtime: string | null): AdapterRungInventory {
   if (runtime === "claude-code") return CLAUDE_ACTIVITY_RUNG_INVENTORY;
   if (runtime === "codex") return CODEX_ACTIVITY_RUNG_INVENTORY;
+  if (runtime === "opencode" || runtime === "antigravity") return {
+    adapterId: `${runtime}-runtime-adapter`, runtime,
+    rungs: [
+      // Gemini cancellation/denial has no verified terminal hook; never promote it to full authority.
+      { rung: "lifecycle-hooks", lifecycleCoverage: runtime === "antigravity" ? "partial" : "full", initialTrust: "trial" },
+      { rung: "needs-input-chrome", lifecycleCoverage: "full", initialTrust: "authoritative" },
+      { rung: "window-sampling", lifecycleCoverage: "full", initialTrust: "authoritative" },
+    ],
+  };
   return TMUX_GENERIC_RUNG_INVENTORY;
 }

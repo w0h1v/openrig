@@ -14,6 +14,8 @@ describe("graphics runtime package", () => {
     expect(runtimeBrand("claude-code").label).toBe("Claude");
     expect(normalizeRuntimeBrandId("codex")).toBe("codex");
     expect(runtimeBrand("codex").label).toBe("Codex");
+    expect(runtimeBrand("opencode").label).toBe("OpenCode");
+    expect(runtimeBrand("antigravity").label).toBe("Antigravity CLI");
   });
 
   it("normalizes tool brands for CMUX, tmux, VS Code, and screenshots", () => {

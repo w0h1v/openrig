@@ -87,6 +87,44 @@ activityRoutes.post("/hooks", async (c) => {
     return c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400);
   }
 
+  // New native producers are generation-bound on BOTH identity and activity delivery.
+  // A delayed callback must never replace the successor's token or oracle state.
+  if (body.runtime === "opencode" || body.runtime === "antigravity") {
+    const registry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+    const nodeId = stringOrNull(body.nodeId);
+    const sessionName = stringOrNull(body.sessionName);
+    const generation = stringOrNull(body.generation);
+    const resolved = store.resolveSession({ nodeId, sessionName, runtime: body.runtime });
+    if (!registry || !resolved || !nodeId || resolved.nodeId !== nodeId || resolved.sessionName !== sessionName) {
+      return c.json({ ok: false, code: "session_identity_mismatch" }, 409);
+    }
+    try {
+      const current = registry.currentOccupantTenure(nodeId);
+      if (!generation || !current || current.generationUuid !== generation || !registry.isOccupantGenerationRegistered(nodeId, generation)) {
+        return c.json({ ok: false, code: "generation_mismatch" }, 409);
+      }
+      const adapters = c.get("runtimeAdapters" as never) as Record<string, import("../domain/runtime-adapter.js").RuntimeAdapter> | undefined;
+      const launchId = stringOrNull(body.launchId);
+      if (!launchId || adapters?.[body.runtime]?.currentLaunchId?.(sessionName!) !== launchId) {
+        return c.json({ ok: false, code: "launch_attempt_mismatch" }, 409);
+      }
+      const session = store.db.prepare("SELECT s.resume_token, n.runtime FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE s.id = ?").get(resolved.sessionId) as { resume_token: string | null; runtime: string | null } | undefined;
+      if (!session || session.runtime !== body.runtime) return c.json({ ok: false, code: "runtime_mismatch" }, 409);
+      const validation = validateResumeToken(body.runtime, stringOrNull(body.sessionId));
+      if (!validation.ok) return c.json({ ok: false, code: "invalid_session_identity" }, 400);
+      // Observational callbacks may confirm an identity, never switch an existing
+      // conversation. The synchronous adapter launch result owns that transition.
+      if (body.eventFamily === "session_identity" && session.resume_token && session.resume_token !== validation.token) {
+        return c.json({ ok: false, code: "native_session_mismatch" }, 409);
+      }
+      if (body.eventFamily !== "session_identity" && session.resume_token !== validation.token) {
+        return c.json({ ok: false, code: "native_session_mismatch" }, 409);
+      }
+    } catch {
+      return c.json({ ok: false, code: "generation_resolver_error" }, 503);
+    }
+  }
+
   if (body.eventFamily === "session_identity") {
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
     const sessionName = stringOrNull(body.sessionName);

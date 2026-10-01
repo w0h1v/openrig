@@ -15,7 +15,8 @@ import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import type { ResumeMetadataRefresher } from "../domain/resume-metadata-refresher.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { Node, RigWithRelations } from "../domain/types.js";
-import { defaultProbeRuntimes } from "../domain/kernel-boot.js";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { defaultProbeRuntimes, kernelVariant, runtimeAvailable } from "../domain/kernel-boot.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
@@ -101,14 +102,21 @@ startupRoutes.post("/terminal", (c) => exclusive(c, "terminal", async () => {
 // First setup materializes the builtin topology only. No occupant is launched.
 startupRoutes.post("/kernel", (c) => exclusive(c, "kernel", async () => {
   const body = await c.req.json().catch(() => ({}));
-  if (body.runtime !== "codex" && body.runtime !== "claude-code") return c.json({ ok: false, message: "Choose an authenticated runtime for the new kernel." }, 400);
+  if (!kernelVariant(body.runtime)) return c.json({ ok: false, message: "Choose an authenticated runtime for the new kernel." }, 400);
   const existing = repo(c).findRigsByName("kernel");
   if (existing.length > 1) return c.json({ ok: false, message: "More than one kernel exists; select an exact rig before continuing." }, 409);
   if (existing.length === 1) return c.json({ ok: true, rigId: existing[0]!.id, reused: true });
+  if (["opencode", "antigravity"].includes(body.runtime) && (typeof body.model !== "string" || !body.model.trim() || /[\s<>]/.test(body.model))) return c.json({ ok: false, code: "model_required", message: "Supply an explicit native model ID for this kernel (OpenCode: provider/model). No model is selected automatically." }, 400);
+  if (body.runtime === "opencode" && !body.model.includes("/")) return c.json({ ok: false, code: "invalid_model", message: "OpenCode requires a provider/model ID." }, 400);
   const auth = await defaultProbeRuntimes();
-  if ((body.runtime === "codex" ? auth.codex : auth.claudeCode) !== "ok") return c.json({ ok: false, code: "provider_prerequisite", message: "The selected runtime is unavailable or unauthenticated. Repair that prerequisite and retry; fresh history will not fix it." }, 409);
+  if (!runtimeAvailable(auth, body.runtime)) return c.json({ ok: false, code: "provider_prerequisite", message: "The selected runtime is unavailable or unauthenticated. Repair that prerequisite and retry; fresh history will not fix it." }, 409);
   const root = kernelRoot();
-  const source = readFileSync(root + (body.runtime === "codex" ? "rig-codex-only.yaml" : "rig-claude-only.yaml"), "utf8");
+  let source = readFileSync(root + kernelVariant(body.runtime), "utf8");
+  if (typeof body.model === "string" && body.model.trim()) {
+    const raw = parseYaml(source);
+    for (const pod of raw.pods) for (const member of pod.members) if (member.runtime !== "terminal") member.model = body.model.trim();
+    source = stringifyYaml(raw);
+  }
   const result = await dep<PodRigInstantiator>(c, "podInstantiator").materialize(source, root, {
     cwdOverride: new SettingsStore().resolveConfig().workspaceRoot,
   });
@@ -128,7 +136,7 @@ startupRoutes.get("/:rigId", async (c) => {
   for (const node of rig.nodes) {
     const forecast = plan.nodes.find((entry) => entry.logicalId === node.logicalId)!;
     const hasHistory = history.some((session) => session.nodeId === node.id);
-    const available = node.runtime === "codex" ? auth.codex === "ok" : node.runtime === "claude-code" ? auth.claudeCode === "ok" : true;
+    const available = runtimeAvailable(auth, node.runtime);
     const observed = await observeSeat(c, rig, node);
     seats.push({ ...forecast, hasHistory, nodeId: node.id, runtime: node.runtime, model: node.model,
       revision: startupRevision(repo(c).db, node), observed,
@@ -156,9 +164,9 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
     // A present or unprobeable pane is never overwritten, even on explicit fresh.
     if (observed.state !== "stopped" && !(observed.state === "transport_unavailable" && body.action !== "fresh")) return c.json({ ok: observed.state === "running", code: observed.state,
       message: observed.detail, sessionName: observed.sessionName }, observed.state === "running" ? 200 : 409);
-    if (node.runtime === "codex" || node.runtime === "claude-code") {
+    if (kernelVariant(node.runtime)) {
       const auth = await defaultProbeRuntimes();
-      if ((node.runtime === "codex" ? auth.codex : auth.claudeCode) !== "ok") return c.json({ ok: false, code: "provider_prerequisite", freshAllowed: false,
+      if (!runtimeAvailable(auth, node.runtime)) return c.json({ ok: false, code: "provider_prerequisite", freshAllowed: false,
         message: `${node.runtime} is unavailable or unauthenticated. Repair it and retry. Starting a fresh conversation cannot repair authentication.` }, 409);
     }
     if (body.revision !== startupRevision(repo(c).db, node)) return c.json({ ok: false, code: "selection_changed",
@@ -175,7 +183,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
     // Never-occupied builtin seats reuse materialization's existing launch effect.
     if (history.length === 0 && rig.rig.name === "kernel") {
       const root = kernelRoot();
-      const raw = RigSpecCodec.parse(readFileSync(root + (node.runtime === "codex" ? "rig-codex-only.yaml" : "rig-claude-only.yaml"), "utf8"));
+      const raw = RigSpecCodec.parse(readFileSync(root + (kernelVariant(node.runtime) ?? "rig.yaml"), "utf8"));
       const spec = RigSpecSchema.normalize(raw as Record<string, unknown>);
       const pod = spec.pods.find((entry) => entry.id === node.logicalId.split(".")[0]);
       const member = pod?.members.find((entry) => `${pod.id}.${entry.id}` === node.logicalId);

@@ -2050,7 +2050,11 @@ export class PodRigInstantiator {
       // #25: a Claude seat's guidance conflict target is the rig's selected file (rig row,
       // the same source startNode binds for the write).
       resolveTargetPath: (category, effectiveId, cwd, sourcePath) =>
-        input.member.runtime === "codex" && category === "skill"
+        input.member.runtime === "opencode"
+          ? (category === "guidance" ? nodePath.join(cwd, "AGENTS.md") : null)
+          : input.member.runtime === "antigravity"
+            ? (category === "guidance" ? nodePath.join(cwd, "AGENTS.md") : category === "skill" ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md") : null)
+          : input.member.runtime === "codex" && category === "skill"
           ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md")
           : claudeConflictTargetPath(
             category, effectiveId, cwd, sourcePath,

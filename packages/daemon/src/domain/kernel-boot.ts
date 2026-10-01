@@ -31,6 +31,9 @@ export type RuntimeAuthStatus = "ok" | "unavailable";
 export interface RuntimeProbeResult {
   claudeCode: RuntimeAuthStatus;
   codex: RuntimeAuthStatus;
+  /** Executable presence only; credentials are verified by the native runtime. */
+  opencode?: RuntimeAuthStatus;
+  antigravity?: RuntimeAuthStatus;
 }
 
 export interface KernelBootDeps {
@@ -171,7 +174,7 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
   }
 
   const codexHome = process.env.CODEX_HOME || nodePath.join(os.homedir(), ".codex");
-  const [claudeCode, codex] = await Promise.all([
+  const [claudeCode, codex, opencode, antigravity] = await Promise.all([
     tryProbe("claude auth status"),
     probeCodexReadiness({
       run: tryProbe,
@@ -180,9 +183,11 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
       },
       env: process.env,
     }),
+    tryProbe("opencode --version"),
+    tryProbe("agy --version"),
   ]);
 
-  return { claudeCode, codex };
+  return { claudeCode, codex, opencode, antigravity };
 }
 
 /** Issue #194 — how the Codex provider selected in `$CODEX_HOME/config.toml`
@@ -250,4 +255,19 @@ function defaultLog(level: "info" | "warn" | "error", message: string): void {
   if (level === "error") console.error(message);
   else if (level === "warn") console.warn(message);
   else console.log(message);
+}
+
+/** Explicit choices do not participate in automatic provider selection. */
+export function kernelVariant(runtime: string | null): string | null {
+  const variants: Record<string, string> = { "claude-code": "rig-claude-only.yaml", codex: "rig-codex-only.yaml",
+    opencode: "rig-opencode-only.yaml", "antigravity": "rig-antigravity-only.yaml" };
+  return runtime !== null && Object.hasOwn(variants, runtime) ? variants[runtime]! : null;
+}
+
+export function runtimeAvailable(probe: RuntimeProbeResult, runtime: string | null): boolean {
+  if (runtime === "claude-code") return probe.claudeCode === "ok";
+  if (runtime === "codex") return probe.codex === "ok";
+  if (runtime === "opencode") return probe.opencode === "ok";
+  if (runtime === "antigravity") return probe.antigravity === "ok";
+  return true;
 }

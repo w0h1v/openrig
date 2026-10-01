@@ -37,6 +37,20 @@ describe("startup consent and effect boundary", () => {
     const second = await request();
     expect(await second.json()).toMatchObject({ ok: true, rigId: body.rigId, reused: true });
   });
+  it.each([["opencode", "openrouter/vendor/model"], ["antigravity", "antigravity-test-model"]])("materializes an explicit %s kernel without Claude or Codex", async (runtime, model) => {
+    setup = createTestApp(db, { podInstantiatorFsOps: { exists: existsSync, readFile: (path) => readFileSync(path, "utf8") } });
+    vi.mocked(defaultProbeRuntimes).mockResolvedValue({ codex: "unavailable", claudeCode: "unavailable", opencode: "ok", antigravity: "ok" });
+    const request = (model?: string) => setup.app.request("/api/startup/kernel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runtime, model }) });
+    expect((await request()).status).toBe(400);
+    expect(setup.rigRepo.findRigsByName("kernel")).toEqual([]);
+    const response = await request(model); const body = await response.json();
+    expect(body).toMatchObject({ ok: true, rigId: expect.any(String) });
+    const agents = setup.rigRepo.getRig(body.rigId)!.nodes.filter(node => node.runtime !== "terminal");
+    expect(agents).toHaveLength(3);
+    expect(agents.every(node => node.runtime === runtime && node.model === model)).toBe(true);
+    expect(setup.sessionRegistry.getSessionsForRig(body.rigId)).toEqual([]);
+    expect(setup.tmuxAdapter.createSession).not.toHaveBeenCalled();
+  });
   it("rejects a changed occupant or model before invoking fresh launch", async () => {
     const { rig, node } = seat(); const revision = startupRevision(db, node);
     db.prepare("UPDATE nodes SET model = ? WHERE id = ?").run("changed-model", node.id);
