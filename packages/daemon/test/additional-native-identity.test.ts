@@ -54,6 +54,26 @@ describe("additional native recovery identity", () => {
     await reconciler.reconcileAll();
     expect(store.getForNode(f.node.id)?.verdict).toBe("mismatch");
   });
+  it.each(["opencode", "antigravity"] as const)("retains exact %s identity with upstream batched pane observations", async runtime => {
+    const f = fixture(runtime);
+    f.sessionRegistry.updateBinding(f.node.id, { tmuxSession: f.session.sessionName, tmuxPane: "%1" });
+    let batchReads = 0;
+    let individualReads = 0;
+    let rows = f.rows;
+    const tmux = { ...f.tmux, listSessions: async () => [{ name: f.session.sessionName }],
+      readAllPaneProcesses: async () => { batchReads++; return new Map([["%1", { pid: 10, command: runtime === "opencode" ? "opencode" : "agy" }]]); },
+      getPanePid: async () => { individualReads++; return 10; },
+      getPaneCommand: async () => { individualReads++; return "node"; },
+    } as unknown as TmuxAdapter;
+    const reconciler = new SeatIdentityReconciler({ db: f.db, tmux, listProcesses: () => rows, readAntigravityLaunchIdentity: f.readAntigravityLaunchIdentity });
+    await reconciler.reconcileAll();
+    expect(new SeatIdentityStore(f.db).getForNode(f.node.id)?.verdict).toBe("verified");
+    expect(batchReads).toBe(3);
+    expect(individualReads).toBe(0);
+    rows = [{ ...rows[0]!, executableName: "zsh", command: "zsh" }];
+    await reconciler.reconcileAll();
+    expect(new SeatIdentityStore(f.db).getForNode(f.node.id)?.verdict).toBe("mismatch");
+  });
   it("keeps fresh Antigravity live without claiming a resumable conversation", async () => {
     const f = fixture("antigravity");
     f.db.prepare("UPDATE sessions SET resume_token = NULL WHERE id = ?").run(f.session.id);

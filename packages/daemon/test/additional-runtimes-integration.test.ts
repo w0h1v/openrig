@@ -61,6 +61,35 @@ describe.each(["opencode", "antigravity"] as const)("%s real activity route and 
     expect((await f.post({ hookEvent: "active" })).status).toBe(409);
     expect((await f.post({ hookEvent: "active", launchId: "successor-launch" })).status).toBe(200);
   });
+  it("cannot bypass native identity or activity fences by omitting or spoofing the runtime", async () => {
+    const f = fixture(runtime);
+    for (const spoofedRuntime of [undefined, null, "codex", "claude-code", "pi", "omp", "terminal"]) {
+      for (const eventFamily of ["session_identity", undefined]) {
+        const response = await f.post({ runtime: spoofedRuntime, eventFamily, generation: "retired", launchId: "retired", sessionId: "wrong_native_token", hookEvent: "Stop" });
+        expect(response.status).toBe(409);
+        expect(f.token()).toEqual({resume_token:null,resume_type:null});
+      }
+    }
+    expect((await f.post({eventFamily:"session_identity"})).status).toBe(200);
+    const before=f.token();
+    expect((await f.post({runtime:"codex",eventFamily:"session_identity",sessionId:"replacement"})).status).toBe(409);
+    expect(f.token()).toEqual(before);
+  });
+  it.each(["running", "detached"] as const)("persists only the intended node identity when newer same-name history is %s", async (status) => {
+    const f = fixture(runtime);
+    const otherRig = f.repo.createRig("other-native-history");
+    const otherNode = f.repo.addNode(otherRig.id, "other", { runtime, cwd: "/other" });
+    const other = f.registry.registerClaimedSession(otherNode.id, f.session.sessionName);
+    if (status === "detached") f.registry.markDetached(other.id);
+    const otherToken = runtime === "opencode" ? "ses_otherNativeHistory" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    f.registry.updateResumeToken(other.id, runtime === "opencode" ? "opencode_id" : "antigravity_id", otherToken, "hook");
+    const before = f.db.prepare("SELECT * FROM sessions WHERE id = ?").get(other.id);
+    const response = await f.post({ eventFamily: "session_identity" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ tokenPersisted: true });
+    expect(f.token()).toEqual({ resume_token: identities[runtime], resume_type: runtime === "opencode" ? "opencode_id" : "antigravity_id" });
+    expect(f.db.prepare("SELECT * FROM sessions WHERE id = ?").get(other.id)).toEqual(before);
+  });
   it("fences retired generations on both identity and activity", async () => {
     const f = fixture(runtime);
     await f.post({ eventFamily: "session_identity" });

@@ -22,6 +22,12 @@ function runningDeps(port: number): StatusDeps {
 }
 
 describe("Broadcast CLI", () => {
+  it("documents that an unscoped pod name matches across rigs", () => {
+    const podOption = broadcastCommand().options.find((option) => option.long === "--pod");
+    expect(podOption?.description).toContain("across all rigs");
+    expect(podOption?.description).toContain("unless --rig is set");
+  });
+
   let server: http.Server;
   let port: number;
   let broadcastPosts = 0;

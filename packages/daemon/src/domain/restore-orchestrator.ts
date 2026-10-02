@@ -16,8 +16,10 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { ClaudeResumeAdapter } from "../adapters/claude-resume.js";
 import type { CodexResumeAdapter } from "../adapters/codex-resume.js";
 import type { PiResumeAdapter } from "../adapters/pi-resume.js";
+import type { OmpResumeAdapter } from "../adapters/omp-resume.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
+import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type {
   RestoreOutcome,
   RestoreRigResult,
@@ -33,6 +35,8 @@ import type {
   RestoreSnapshotSelection,
 } from "./types.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
+import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
+import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
@@ -141,6 +145,7 @@ interface RestoreOrchestratorDeps {
    *  resume without the adapter falls through to the honest no-adapter error. */
   piResume?: PiResumeAdapter;
   nativeRuntimeAdapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
+  ompResume?: OmpResumeAdapter;
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -160,6 +165,7 @@ export class RestoreOrchestrator {
   private codexResume: CodexResumeAdapter;
   private piResume: PiResumeAdapter | null;
   private nativeRuntimeAdapters: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
+  private ompResume: OmpResumeAdapter | null;
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private readAntigravityLaunchIdentity?: AntigravityLaunchIdentityReader;
@@ -201,6 +207,7 @@ export class RestoreOrchestrator {
     this.codexResume = deps.codexResume;
     this.piResume = deps.piResume ?? null;
     this.nativeRuntimeAdapters = deps.nativeRuntimeAdapters ?? {};
+    this.ompResume = deps.ompResume ?? null;
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
@@ -702,7 +709,9 @@ export class RestoreOrchestrator {
         else consumesReplay = true;
       }
 
-      for (const file of consumesReplay ? startupCtx.resolvedStartupFiles ?? [] : []) {
+      for (const storedFile of consumesReplay ? startupCtx.resolvedStartupFiles ?? [] : []) {
+        // Validate the file replay will actually deliver (#261: built-ins follow the running install).
+        const file = reanchorBuiltinStartupFile(storedFile, undefined, undefined, exists);
         if (!file.required) {
           if (this.pathLike(file.absolutePath) && !exists(file.absolutePath)) {
             warnings.push(`Restore pre-validation: optional startup file missing for ${node.logicalId}: ${file.absolutePath}`);
@@ -744,7 +753,8 @@ export class RestoreOrchestrator {
       // gate from blocking the attempt entirely. Missing REQUIRED startup
       // files and genuinely-fatal blockers (malformed snapshot, missing nodes)
       // stay critical above.
-      for (const entry of startupCtx.projectionEntries ?? []) {
+      for (const storedEntry of startupCtx.projectionEntries ?? []) {
+        const entry = reanchorShippedProjectionEntry(storedEntry, undefined, exists);
         if (this.pathLike(entry.sourcePath) && !exists(entry.sourcePath)) {
           warnings.push(`projection_drift: source root missing for ${node.logicalId}: ${entry.sourcePath} (projection will be skipped at startup; session continuity is unaffected)`);
         }
@@ -1310,8 +1320,9 @@ export class RestoreOrchestrator {
         if (adapter) {
           // Prefilter: check which files/entries still exist
           const existsFn = opts.fsOps?.exists ?? (() => true);
-          const sourceEntries = replayContained ? [] : startupCtx.projectionEntries;
-          const sourceFiles = replayContained ? [] : startupCtx.resolvedStartupFiles;
+          const sourceEntries = replayContained ? [] : startupCtx.projectionEntries.map((e) => reanchorShippedProjectionEntry(e, undefined, existsFn));
+          // #261: recognized built-in startup files follow the running install.
+          const sourceFiles = replayContained ? [] : startupCtx.resolvedStartupFiles.map((f) => reanchorBuiltinStartupFile(f, undefined, undefined, existsFn));
           const sourceActions = replayContained ? [] : startupCtx.startupActions;
           const filteredEntries = sourceEntries.filter((e) => {
             if (!existsFn(e.absolutePath)) {
@@ -1517,12 +1528,15 @@ export class RestoreOrchestrator {
     }
     // Legacy resume adapters do not write native metadata. Fill only the
     // launched row's empty token after proof; never overwrite a hook/operator.
-    if (node.runtime === "codex" && sessionId && resumeToken) {
+    const provedClaudeWrapper = node.runtime === "claude-code"
+      && classifyPaneRuntimeMatch(identity.command, node.runtime) === "mismatch"
+      && isShellForeground(identity.command?.trim().toLowerCase() ?? "");
+    if ((node.runtime === "codex" || provedClaudeWrapper) && sessionId && resumeToken) {
       const current = this.db.prepare("SELECT node_id, session_name, status, resume_token FROM sessions WHERE id = ?").get(sessionId) as
         { node_id: string; session_name: string; status: string; resume_token: string | null } | undefined;
       const sameSession = current?.node_id === node.id && current.session_name === sessionName && current.status === "running";
       const retained = sameSession && (current.resume_token === resumeToken
-        || (!current.resume_token && this.sessionRegistry.updateResumeToken(sessionId, "codex_id", resumeToken, "scrape")));
+        || (!current.resume_token && this.sessionRegistry.updateResumeToken(sessionId, node.runtime === "codex" ? "codex_id" : "claude_id", resumeToken, "scrape")));
       if (!retained) {
         const store = new SeatIdentityStore(this.db);
         const proof = store.getForNode(node.id);
@@ -1635,7 +1649,7 @@ export class RestoreOrchestrator {
       const selection = new NativePermissionStore(this.db).read(nodeId);
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
         : this.codexResume.canResume(resumeType, resumeToken) ? "codex"
-        : resumeType === "opencode_id" ? "opencode" : resumeType === "antigravity_id" ? "antigravity" : "pi";
+        : resumeType === "opencode_id" ? "opencode" : resumeType === "antigravity_id" ? "antigravity" : resumeType === "omp_session_file" ? "omp" : "pi";
       if (selection && selection.runtime !== runtime) throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
       const override = permissionBindingOverride(selection);
       resolvedPosture = override.launchPosture ?? resolvedPosture;
@@ -1721,6 +1735,19 @@ export class RestoreOrchestrator {
       }
       return { kind: "failed", message: result.message };
     }
+    if (this.ompResume?.canResume(resumeType, resumeToken)) {
+      const result = await this.ompResume.resume(sessionName, resumeType, resumeToken, cwd, model, resolvedPosture);
+      if (result.ok) {
+        if (result.appliedLaunch && launchGeneration) this.appliedLaunchStore.recordGeneration(launchGeneration, result.appliedLaunch);
+        return { kind: "resumed" };
+      }
+      if (result.code === "retry_fresh") return { kind: "retry_fresh" };
+      if (result.code === "attention_required") {
+        return { kind: "attention_required", message: result.message, evidence: (result as { evidence?: string }).evidence };
+      }
+      return { kind: "failed", message: result.message };
+    }
+
 
     return { kind: "failed", message: "No resume adapter available for this runtime/token combination." };
   }

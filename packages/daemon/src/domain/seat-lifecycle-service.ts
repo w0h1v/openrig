@@ -13,6 +13,7 @@ import type { RuntimeAdapter, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
 import type { StartupAction } from "./types.js";
 import { resolveStartupProof } from "./startup-resolver.js";
+import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { observeSolePane } from "./pane-binding-observation.js";
@@ -501,10 +502,41 @@ export class SeatLifecycleService {
     ).all(node.id) as Array<{ id: string }>).map((row) => row.id);
     const retiringGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
 
-    const canonicalProbe = await this.probeLiveness(
+    let canonicalProbe = await this.probeLiveness(
       canonicalSessionName,
       "fresh launch refuses rather than overwrite a possibly-live canonical session",
     );
+    // `rig seat stop` persists an exited row after killing its managed session.
+    // When that was the last tmux session, tmux exits too, so the next classified
+    // probe sees unavailable transport instead of positive absence. Reopen an
+    // empty server only when the persisted state proves this seat's managed
+    // occupant was deliberately stopped and no other managed row remains live.
+    // The probe below still decides absence; a recreated session or failed
+    // transport remains a refusal.
+    if ("code" in canonicalProbe) {
+      const latest = this.latestSession(node.id);
+      const hasCurrentBinding = this.sessionRegistry.getBindingForNode(node.id) !== null;
+      const stoppedManagedOccupant = latest !== null
+        && latest.session_name === canonicalSessionName
+        && latest.status === "exited"
+        && latest.origin !== "claimed"
+        && !hasCurrentBinding
+        && this.nonTerminalSessions(node.id).length === 0;
+      if (stoppedManagedOccupant) {
+        try {
+          const restored = await this.tmuxAdapter.startServer();
+          if (restored.ok) {
+            canonicalProbe = await this.probeLiveness(
+              canonicalSessionName,
+              "fresh launch refuses rather than overwrite a possibly-live canonical session",
+            );
+          }
+        } catch {
+          // Keep the original classified refusal when the transport cannot be
+          // restored; never translate a failed start into absence.
+        }
+      }
+    }
     if ("code" in canonicalProbe) return canonicalProbe;
     if (canonicalProbe.state === "present") {
       const currentSession = this.latestSession(node.id);
@@ -551,6 +583,11 @@ export class SeatLifecycleService {
         input.operator,
       );
       if (!stopped.ok) return stopped;
+      // Stopping the server's last session ends tmux's server, and every probe
+      // below would then be transport_unavailable, never absence. Restore an
+      // empty server (no session is invented; a no-op while the server is up)
+      // so they get a positive answer. The classified probes still decide.
+      await this.tmuxAdapter.startServer();
     }
 
     // Reuse clean's exhaustive, positive-absence gate for stale/history rows.
@@ -843,7 +880,8 @@ export class SeatLifecycleService {
       // S04 owns the live ambient skill set. Replaying the older catalog
       // selection here could reinstall a skill that work-install removed.
       if (raw["category"] === "skill") continue;
-      entries.push({
+      // #261: shipped-spec resources follow the running install.
+      entries.push(reanchorShippedProjectionEntry({
         category: raw["category"],
         effectiveId: raw["effectiveId"],
         sourceSpec: raw["sourceSpec"],
@@ -855,7 +893,7 @@ export class SeatLifecycleService {
         ...(typeof raw["mergeStrategy"] === "string" ? { mergeStrategy: raw["mergeStrategy"] as ProjectionEntry["mergeStrategy"] } : {}),
         ...(typeof raw["target"] === "string" ? { target: raw["target"] } : {}),
         ...(typeof raw["pluginType"] === "string" ? { pluginType: raw["pluginType"] as ProjectionEntry["pluginType"] } : {}),
-      });
+      }));
     }
 
     const resolvedStartupFiles: ResolvedStartupFile[] = [];
@@ -868,7 +906,8 @@ export class SeatLifecycleService {
         || !isOptionalOneOf(raw["kind"], ["file"] as const)) {
         return this.malformedStartupContext(nodeId, "resolved_files_json contains an invalid entry");
       }
-      resolvedStartupFiles.push({
+      // #261: recognized built-in startup files follow the running install.
+      resolvedStartupFiles.push(reanchorBuiltinStartupFile({
         path: raw["path"],
         absolutePath: raw["absolutePath"],
         ownerRoot: raw["ownerRoot"],
@@ -876,7 +915,7 @@ export class SeatLifecycleService {
         required: raw["required"],
         appliesOn: raw["appliesOn"],
         ...(raw["kind"] === "file" ? { kind: "file" as const } : {}),
-      });
+      }));
     }
 
     const startupActions: StartupAction[] = [];

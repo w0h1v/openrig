@@ -8,7 +8,7 @@ import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { startTmuxTranscriptCapture } from "./transcript-capture.js";
-import { deriveResumeToken } from "./resume-token-capture.js";
+import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import {
   observeSolePane,
   paneObservationVerdict,
@@ -85,6 +85,7 @@ interface ClaimServiceDeps {
   piRunnerStateStore?: {
     readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
   };
+  ompRunnerStateStore?: ResumeTokenCaptureDeps["ompRunnerStateStore"];
 }
 
 interface BindOptions {
@@ -121,6 +122,7 @@ export class ClaimService {
   private resumeTokenCapturer: ClaimServiceDeps["resumeTokenCapturer"] | null;
   private nativeSessionStores: ClaimServiceDeps["nativeSessionStores"];
   private piRunnerStateStore: ClaimServiceDeps["piRunnerStateStore"] | null;
+  private ompRunnerStateStore: ClaimServiceDeps["ompRunnerStateStore"] | null;
 
   constructor(deps: ClaimServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("ClaimService: rigRepo must share the same db handle");
@@ -141,6 +143,7 @@ export class ClaimService {
     this.resumeTokenCapturer = deps.resumeTokenCapturer ?? null;
     this.nativeSessionStores = deps.nativeSessionStores;
     this.piRunnerStateStore = deps.piRunnerStateStore ?? null;
+    this.ompRunnerStateStore = deps.ompRunnerStateStore ?? null;
   }
 
   private async verifyAdditionalNativeAdoption(runtime: string | null | undefined, sessionName: string, pane: PaneBindingObservation): Promise<boolean> {
@@ -266,7 +269,7 @@ export class ClaimService {
       }
       const derived = await deriveResumeToken(
         { runtime: input.runtime, sessionName: input.sessionName, generation: generation ?? undefined },
-        { contextUsageStore: this.contextUsageStore, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore, nativeSessionStores: this.nativeSessionStores },
+        { contextUsageStore: this.contextUsageStore, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore, nativeSessionStores: this.nativeSessionStores, ompRunnerStateStore: this.ompRunnerStateStore },
       );
       if (native && this.sessionRegistry.currentOccupantGenerationForSession(input.sessionName) !== generation) {
         this.emitCaptureSkip(input, input.runtime!, "missing_sidecar");

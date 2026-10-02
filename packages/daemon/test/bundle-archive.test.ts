@@ -64,6 +64,17 @@ describe("Bundle archive", () => {
     return staging;
   }
 
+  it("pack creates parent directory if it does not exist", async () => {
+    const staging = createStaging();
+    const nestedOut = path.join(tmpDir, "missing", "sub", "test.rigbundle");
+
+    const hash = await pack(staging, nestedOut);
+
+    expect(fs.existsSync(nestedOut)).toBe(true);
+    expect(fs.existsSync(`${nestedOut}.sha256`)).toBe(true);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   // T1: Pack creates valid tar.gz
   it("pack creates valid tar.gz file", async () => {
     const staging = createStaging();
@@ -124,6 +135,42 @@ describe("Bundle archive", () => {
 
     await expect(unpack(malArchive, path.join(tmpDir, "out")))
       .rejects.toThrow(/Unsafe archive entry|path traversal/i);
+  });
+
+  it("backslash path traversal in archive entry rejected during extraction", async () => {
+    const malDir = path.join(tmpDir, "mal-win-staging");
+    fs.mkdirSync(malDir, { recursive: true });
+    fs.writeFileSync(path.join(malDir, "evil.txt"), "escape!");
+
+    const malArchive = path.join(tmpDir, "mal-win.rigbundle");
+    await tar.create(
+      { gzip: true, file: malArchive, cwd: malDir, prefix: "..\\escape" },
+      ["evil.txt"],
+    );
+
+    const archiveHash = createHash("sha256").update(fs.readFileSync(malArchive)).digest("hex");
+    fs.writeFileSync(`${malArchive}.sha256`, archiveHash);
+
+    await expect(unpack(malArchive, path.join(tmpDir, "out")))
+      .rejects.toThrow(/Unsafe archive entry|path traversal/i);
+  });
+
+  it("windows drive letter in archive entry rejected during extraction", async () => {
+    const malDir = path.join(tmpDir, "mal-drive-staging");
+    fs.mkdirSync(malDir, { recursive: true });
+    fs.writeFileSync(path.join(malDir, "evil.txt"), "escape!");
+
+    const malArchive = path.join(tmpDir, "mal-drive.rigbundle");
+    await tar.create(
+      { gzip: true, file: malArchive, cwd: malDir, prefix: "C:\\windows\\temp" },
+      ["evil.txt"],
+    );
+
+    const archiveHash = createHash("sha256").update(fs.readFileSync(malArchive)).digest("hex");
+    fs.writeFileSync(`${malArchive}.sha256`, archiveHash);
+
+    await expect(unpack(malArchive, path.join(tmpDir, "out")))
+      .rejects.toThrow(/Unsafe archive entry|absolute path/i);
   });
 
   // T4b: Symlink entry rejection
