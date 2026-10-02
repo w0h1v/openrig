@@ -13,7 +13,7 @@ import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "..
 import { getSelfHostId } from "./hosts/fanout-contract.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { isShellForeground } from "./shell-classifier.js";
-import { verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessLister } from "./native-process-lineage.js";
+import { observeClaudeDelivery, verifyCodexPaneProcess, type ClaudeDeliveryObservation, type NativeProcessLister } from "./native-process-lineage.js";
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
 
@@ -40,8 +40,22 @@ const MID_WORK_PATTERNS = [
 // Idle-prompt patterns: empty prompt line (no typed text after the char).
 // Lines like '❯ Working on a task.' have text after the prompt char and
 // are NOT idle — the prompt is active with input that may look mid-work.
+// Codex 0.157 renders a fixed placeholder in the empty composer (codex-rs/tui/src/chatwidget.rs
+// `PLACEHOLDER`) and its footer no longer carries the `· Context [` status bar. The placeholder
+// is visible both idle and mid-turn; mid-turn the status row (`Working … esc to interrupt`)
+// normally sits above it, but Codex hides that row while it streams assistant output. So the
+// placeholder counts as idle only through MID_WORK_PATTERNS here, and classifySendReadiness
+// never lets a placeholder-only verdict override a display-fresh running/needs_input hook.
+const CODEX_EMPTY_COMPOSER_PATTERN = /^›\s+Ask Codex to do anything\s*$/;
+
+// Codex's live turn-status row: a bullet, a header ("Working", or the reasoning summary Codex shows in its place),
+// then the elapsed time and "esc to interrupt" in parentheses, e.g. "• Working (1h 09m 39s • esc to interrupt)".
+// Completed output that merely says "Working directory: …" or "Working tree is clean." never matches.
+const CODEX_TURN_STATUS_PATTERN = /^[•◦]\s+\S.*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)/;
+
 const IDLE_PROMPT_PATTERNS = [
   /^[❯›]\s*$/,  // prompt char + optional whitespace + end-of-line only
+  CODEX_EMPTY_COMPOSER_PATTERN,
 ];
 
 const PROMPT_DRAFT_PATTERNS = [
@@ -199,6 +213,21 @@ export function classifyPaneActivity(paneContent: string, runtime?: string | nul
       state: "agent_idle",
       reason: "idle_status_bar",
       evidence: truncateEvidence(idleStatusBarLine),
+    };
+  }
+  // Codex keeps its empty-composer placeholder on screen during a turn, and its turn-status row
+  // (`• Working (… esc to interrupt)`) can sit well above the composer when queued or incoming
+  // message blocks come in between. So under the placeholder, that row anywhere in the capture is
+  // the turn still running. Only the status-row signature counts at that range: completed prose
+  // ("Working tree is clean.") further up is history, and the 8-line generic check below still applies.
+  const placeholderMidWork = idlePromptLine && CODEX_EMPTY_COMPOSER_PATTERN.test(idlePromptLine)
+    ? findPatternEvidence(lastNonBlank, [CODEX_TURN_STATUS_PATTERN])
+    : null;
+  if (placeholderMidWork) {
+    return {
+      state: "agent_active",
+      reason: "mid_work_pattern",
+      evidence: placeholderMidWork,
     };
   }
   if (idlePromptLine && !MID_WORK_PATTERNS.some((pattern) => pattern.test(recentWindow))) {
@@ -971,6 +1000,22 @@ export class SessionTransport {
     let preVerifyContent: string | null = null;
     const sessionMeta = this.getSessionMeta(sessionName);
     const runtime = sessionMeta.runtime;
+    let runtimeAdvisory: string | undefined;
+    const bindingChanged = () => JSON.stringify(this.getSessionMeta(sessionName)) !== JSON.stringify(sessionMeta);
+    const changedRecipient = (sent = false): SendResult => ({ ok: false, sessionName, sent, reason: "target_runtime_conflict",
+      error: sent ? "Recipient binding changed after paste; Enter was not sent." : "Recipient binding changed; no text was sent." });
+    const checkClaudeTarget = async (): Promise<SendResult | null> => {
+      if (runtime !== "claude-code") return null;
+      if (bindingChanged()) return changedRecipient();
+      const observation = await this.claudeDeliveryObservation(sessionName, sessionMeta.pane, sessionMeta.resumeToken);
+      if (bindingChanged()) return changedRecipient();
+      if (observation.state === "idle_shell" || observation.state === "conflict") {
+        return { ok: false, sessionName, sent: false, reason: observation.state === "idle_shell" ? "target_runtime_not_running" : "target_runtime_conflict",
+          error: `Refused: ${observation.detail}. No text was sent.` };
+      }
+      if (observation.state === "unknown") runtimeAdvisory = `runtime: ${observation.detail}; delivery proceeds without verified native identity.`;
+      return null;
+    };
     // S01/S02 P2 observation context, frozen at attempt entry before any await.
     const observed = this.captureObserver ? {
       attemptId: randomUUID(),
@@ -980,6 +1025,7 @@ export class SessionTransport {
       sentHash: null as string | null,
     } : null;
     const observe = (result: SendResult): SendResult => {
+      if (result.ok && runtimeAdvisory) result = { ...result, warning: [runtimeAdvisory, result.warning].filter(Boolean).join(" ") };
       if (observed && this.captureObserver) {
         safeRecord(this.captureObserver, {
           seam: "send_verify",
@@ -1009,9 +1055,9 @@ export class SessionTransport {
     }
 
     // #142 — a shell label may be an idle shell or a managed launch wrapper.
-    // Only positive native process proof clears the refusal, but missing proof
-    // does not establish that the runtime stopped. Terminal/unreadable behavior is unchanged.
-    const unverifiedShell = runtime && runtime !== "terminal"
+    // Non-Claude runtimes retain their existing proof requirement. Claude ordinary
+    // delivery applies its distinct uncertainty policy at the input boundary below.
+    const unverifiedShell = runtime && runtime !== "terminal" && runtime !== "claude-code"
       ? await this.unverifiedShellForeground(sessionName, runtime, sessionMeta.pane, sessionMeta.resumeToken) : null;
     if (unverifiedShell) {
       return observe({
@@ -1178,6 +1224,8 @@ export class SessionTransport {
           error: `submitOnly refused: the pane of '${sessionName}' does not show the expected staged text — pressing Enter here could drive something else entirely. Nothing was submitted.`,
         };
       }
+      const targetFailure = await checkClaudeTarget();
+      if (targetFailure) return targetFailure;
       const submitResult = await this.runStage(
         "session_transport.submit",
         () => this.tmuxAdapter.sendKeys(sessionName, ["C-m"]),
@@ -1186,7 +1234,7 @@ export class SessionTransport {
       if (!submitResult.ok) {
         return { ok: false, sessionName, reason: "submit_failed", outcome: "failed", error: `submitOnly: Enter did not land on '${sessionName}': ${submitResult.message}` };
       }
-      return { ok: true, sessionName, outcome: "rendered-unconfirmed", submitOnly: true };
+      return observe({ ok: true, sessionName, outcome: "rendered-unconfirmed", submitOnly: true });
     }
 
     if (waitForIdleMs !== undefined) {
@@ -1320,6 +1368,10 @@ export class SessionTransport {
       text = appendDeliveredSegment(text, this.now().getTime() - Date.parse(opts.stampISO));
     }
 
+    // Recheck the selected recipient after readiness/capture awaits, at the input boundary.
+    const targetFailure = await checkClaudeTarget();
+    if (targetFailure) return observe(targetFailure);
+
     // 3. Send text (paste)
     if (observed) observed.sentHash = hashSentText(text);
     const textResult = await this.runStage(
@@ -1340,6 +1392,8 @@ export class SessionTransport {
 
     // 4. Wait 200ms (spike-proven delay)
     await this.sleep(200);
+
+    if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
 
     // 5. Submit (C-m)
     const submitResult = await this.runStage(
@@ -1457,6 +1511,27 @@ export class SessionTransport {
     }
   }
 
+  private async claudeDeliveryObservation(sessionName: string, pane: string | null, resumeToken: string | null): Promise<ClaudeDeliveryObservation> {
+    const unknown = { state: "unknown" as const, detail: "Claude runtime observation or older launch binding is unavailable" };
+    try {
+      const panes = await this.tmuxAdapter.listPanes(sessionName);
+      if (panes.length > 1 || (pane && panes.length === 1 && panes[0]!.id !== pane)) {
+        return { state: "conflict", detail: "The session does not have the single expected bound pane" };
+      }
+      if (!pane || panes.length === 0) return unknown;
+      const [sessionPid, panePid] = await Promise.all([this.tmuxAdapter.getPanePid(sessionName), this.tmuxAdapter.getPanePid(pane)]);
+      if (sessionPid && panePid && sessionPid !== panePid) return { state: "conflict", detail: "The session and bound pane name different processes" };
+      const observation = await observeClaudeDelivery({ target: pane, tmux: this.tmuxAdapter, listProcesses: this.listProcesses, expectedToken: resumeToken });
+      // Refusal already has positive evidence; a later failed read cannot erase it.
+      if (observation.state === "conflict" || observation.state === "idle_shell") return observation;
+      const after = await this.tmuxAdapter.listPanes(sessionName);
+      if (after.length > 1 || (after.length === 1 && after[0]!.id !== pane)) return { state: "conflict", detail: "The bound pane changed during delivery verification" };
+      const currentPid = await this.tmuxAdapter.getPanePid(pane);
+      if (panePid && currentPid && panePid !== currentPid) return { state: "conflict", detail: "The bound pane process changed during delivery verification" };
+      return after.length === 0 || !sessionPid || !panePid || !currentPid ? unknown : observation;
+    } catch { return unknown; }
+  }
+
   /** Shell label without positive native proof; not proof of an idle shell or stopped agent.
    * Null when no shell label is observed, or the expected native process is verified. */
   private async unverifiedShellForeground(sessionName: string, runtime: string, pane: string | null, resumeToken: string | null): Promise<string | null> {
@@ -1467,12 +1542,11 @@ export class SessionTransport {
       return null;
     }
     if (!paneCommand || !isShellForeground(paneCommand)) return null;
-    if ((runtime === "codex" || runtime === "claude-code") && pane) {
-      // Reuse stable, foreground, pane-descendant proof. Claude fresh/resume and
-      // Codex resume must name this session's token. Stale UI, a Node
+    if (runtime === "codex" && pane) {
+      // Reuse stable, foreground, pane-descendant Codex proof. A resumed process
+      // must name this session's token. Stale UI, a Node
       // launcher alone, missing observations or a native process elsewhere cannot clear it.
-      const verify = runtime === "codex" ? verifyCodexPaneProcess : verifyClaudePaneProcess;
-      const native = await verify({ target: sessionName, tmux: this.tmuxAdapter,
+      const native = await verifyCodexPaneProcess({ target: sessionName, tmux: this.tmuxAdapter,
         listProcesses: this.listProcesses, expectedToken: resumeToken });
       if (native && await this.tmuxAdapter.getPanePid(pane).catch(() => null) === native.panePid) return null;
     }
@@ -1541,7 +1615,7 @@ export class SessionTransport {
       }
     }
 
-    return probeSessionActivity({
+    const probe = await probeSessionActivity({
       sessionName: input.sessionName,
       runtime: input.runtime,
       attachmentType: input.attachmentType as "tmux" | "external_cli" | null | undefined,
@@ -1550,6 +1624,22 @@ export class SessionTransport {
       captureObserver: this.captureObserver,
       binding: input.binding,
     });
+    // A Codex empty-composer placeholder is also on screen while Codex streams with its status
+    // row hidden, so a placeholder-only idle verdict must not override a display-fresh (<5min)
+    // running/needs_input hook such as UserPromptSubmit: keep it until it ages out. An `unknown`
+    // hook (e.g. SessionStart) carries no evidence of work and does not block.
+    if (
+      probe.state === "idle" &&
+      probe.reason === "idle_prompt" &&
+      CODEX_EMPTY_COMPOSER_PATTERN.test(probe.evidence ?? "") &&
+      hookActivity &&
+      hookActivity.evidenceSource === "runtime_hook" &&
+      hookActivity.stale !== true &&
+      (hookActivity.state === "running" || hookActivity.state === "needs_input")
+    ) {
+      return hookActivity;
+    }
+    return probe;
   }
 
   // OPR.0.4.1.10 — a runtime-hook is authoritative for send-readiness only within the tight send

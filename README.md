@@ -4,7 +4,9 @@
 
 A harness wraps a model. A rig wraps your harnesses. Define your agent team in YAML, boot it with one command. Claude Code and Codex in the same rig, managed as one system.
 
-OpenRig turns AI coding agents from a pile of terminal sessions into a persistent, organized team. Talk to a lead agent about the outcome you want; it can coordinate specialists across teams and bring you results and decisions that need your attention. Start with a repository and one useful change, then keep the team's work and context at the same addresses.
+OpenRig is open-source software for building and running your own network of agents. It turns AI coding agents from a pile of terminal sessions into a persistent, organized team. Talk to a lead agent about the outcome you want; it can coordinate specialists across teams and bring you results and decisions that need your attention. Start with a repository and one useful change, then keep the team's work and context at the same addresses.
+
+It's the open-source system behind my AI civilization experiments.
 
 **Guide:** [Getting started](docs/reference/getting-started.md) · **Stuck?** [Help](docs/reference/help.md) · **Questions:** [Q&A](https://github.com/mvschwarz/openrig/discussions/92) · **Updates and demos:** [@_feralmachine on X](https://x.com/_feralmachine)
 
@@ -208,7 +210,7 @@ rig specs ls
 
 ## How It Works
 
-OpenRig is a local daemon + CLI + terminal UI + MCP server, built on tmux. The older React web UI remains in maintenance mode with best-effort support.
+OpenRig is a local daemon + CLI + terminal UI + MCP server, built on tmux. The older React web UI remains in maintenance mode with best-effort support. The web UI is off by default. To enable it, run `rig config set ui.enabled true`, then `rig daemon stop` and `rig daemon start`. Open it with `rig ui open`; the setting takes effect when the daemon starts.
 
 ```
 CLI / TUI / MCP
@@ -223,7 +225,7 @@ Hono HTTP daemon
 - **CLI**: Commands for both humans and agents to launch teams, inspect state, send messages, track owned work, and manage context.
 - **TUI**: Topology explorer, table and graph views, seat details, Specs, Projects, Terminals, Feed, and System. Navigate with the keyboard, mouse, or command bar.
 - **MCP**: Tools so agents can manage their own topology (`rig_up`, `rig_ps`, `rig_send`, `rig_chatroom_send`, etc.)
-- **Runtimes**: Native Claude Code and Codex sessions, terminal nodes, and a Pi adapter using an RPC runner inside a terminal pane.
+- **Runtimes**: Native Claude Code and Codex sessions, terminal nodes, and Pi and Oh My Pi via RPC runners.
 
 ## Terminal UI and Workspaces
 
@@ -330,6 +332,7 @@ accepted tails, copies the library without overwrite, and switches config last.
 The helper never removes the legacy telemetry or library. Retirement follows
 separate stable runtime, writer, reader, and recovery proof. Daemon, database,
 seat, plugin, and release lifecycle actions remain agent-owned.
+
 
 ## Requirements
 

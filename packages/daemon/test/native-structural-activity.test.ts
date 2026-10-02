@@ -52,6 +52,27 @@ describe("native structural and needs-input arbitration", () => {
     await service.pollAllRunningTmuxSeats(db);
     expect(service.getStructuralActivity("seat")?.state).toBe("agent_idle");
   });
+  it("fences native batched captures across a generation swap and retains their capture timestamp", async () => {
+    let generation = "old";
+    let changeGeneration = true;
+    let fallbackCaptures = 0;
+    const capturedAt = new Date("2026-10-01T12:00:00Z");
+    const db = { prepare: () => ({ all: () => [{ session_name: "seat", node_id: "node", runtime: "opencode" }], get: () => ({ generation_uuid: generation }) }) } as unknown as Database.Database;
+    const service = new SeatStructuralActivityService({
+      getPaneCommand: async () => "opencode",
+      capturePaneContent: async () => { fallbackCaptures++; return empty; },
+      capturePanesContent: async () => {
+        if (changeGeneration) generation = "new";
+        return new Map([["seat", { text: empty, capturedAt }]]);
+      },
+    }, () => new Date(capturedAt.getTime() + 1000));
+    await service.pollAllRunningTmuxSeats(db);
+    expect(service.getStructuralActivity("seat")).toBeNull();
+    changeGeneration = false;
+    await service.pollAllRunningTmuxSeats(db);
+    expect(service.getStructuralActivity("seat")).toMatchObject({ state: "agent_idle", observedAt: capturedAt.toISOString() });
+    expect(fallbackCaptures).toBe(0);
+  });
   it("never carries predecessor permission chrome across an occupant swap", () => {
     let now = Date.parse("2026-09-30T12:00:00Z");
     const observation: StructuralObservation = { state: "attention", reason: "permission", evidence: null, observedAt: new Date(now).toISOString() };

@@ -1,10 +1,10 @@
-export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "opencode" | "antigravity" | "terminal" | "unknown";
+export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "omp" | "opencode" | "antigravity" | "terminal" | "unknown";
 
 export interface RuntimeBrand {
   id: RuntimeBrandId;
   label: string;
   shortLabel: string;
-  tone: "sand" | "green" | "slate" | "neutral";
+  tone: "sand" | "green" | "slate" | "violet" | "neutral";
 }
 
 const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
@@ -29,6 +29,12 @@ const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
   },
   opencode: { id: "opencode", label: "OpenCode", shortLabel: "OpenCode", tone: "slate" },
   "antigravity": { id: "antigravity", label: "Antigravity CLI", shortLabel: "Antigravity", tone: "slate" },
+  omp: {
+    id: "omp",
+    label: "Oh My Pi",
+    shortLabel: "OMP",
+    tone: "violet",
+  },
   terminal: {
     id: "terminal",
     label: "Terminal",
@@ -51,6 +57,7 @@ export function normalizeRuntimeBrandId(runtime: string | null | undefined): Run
   if (normalized === "opencode") return "opencode";
   if (normalized === "antigravity") return "antigravity";
   if (normalized === "pi" || normalized.startsWith("pi-")) return "pi";
+  if (normalized === "omp" || normalized.startsWith("omp-") || normalized === "oh-my-pi") return "omp";
   if (normalized === "terminal" || normalized === "tmux" || normalized === "shell") return "terminal";
   return "unknown";
 }

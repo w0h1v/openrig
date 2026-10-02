@@ -101,12 +101,24 @@ export function observePiResourceTrust(trust: "approve" | "no-approve"): Applied
   return { runtime: "pi", axis: "resource_trust", state: "observed", value: trust };
 }
 
+export function observeOmpApprovalMode(arg: string): AppliedLaunchObservation {
+  const mode = arg.trim().replace(/\s+/g, " ");
+  if (mode === "--approval-mode yolo") {
+    return { runtime: "omp", axis: "permission", state: "observed", value: "yolo" };
+  }
+  if (mode === "--approval-mode always-ask") {
+    return { runtime: "omp", axis: "permission", state: "observed", value: "always-ask" };
+  }
+  return { runtime: "omp", axis: "permission", state: "unknown", value: null, reason: "unrecognized_launch_argument" };
+}
+
 function runtimeCommand(runtime: string): string | null {
   if (runtime === "claude-code") return "claude";
   if (runtime === "codex") return "codex";
   if (runtime === "pi") return "pi";
   if (runtime === "opencode") return "opencode";
   if (runtime === "antigravity") return "agy";
+  if (runtime === "omp") return "omp";
   return null;
 }
 
@@ -224,7 +236,7 @@ function inspectLaunchBoundRuntime(
   runtime: string,
   applied: AppliedLaunchObservation | null,
 ): RuntimeEnforcementDiagnostic {
-  const axis: AppliedLaunchAxis = runtime === "codex" ? "sandbox" : runtime === "pi" ? "resource_trust" : runtime === "opencode" || runtime === "antigravity" ? "permission" : "not_applicable";
+  const axis: AppliedLaunchAxis = runtime === "codex" ? "sandbox" : runtime === "pi" ? "resource_trust" : runtime === "omp" || runtime === "opencode" || runtime === "antigravity" ? "permission" : "not_applicable";
   if (!applied || applied.runtime !== runtime || applied.axis !== axis || applied.state !== "observed" || !applied.value) {
     return unknownEnforcement(axis, null, null, applied?.reason ?? "applied_launch_unknown");
   }

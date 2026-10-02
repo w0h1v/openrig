@@ -107,9 +107,16 @@ export class RuntimeVerifier {
     return result;
   }
 
+  /** OMP is an independent executable; do not inherit Pi's Node engine check. */
+  async verifyOmp(): Promise<RuntimeVerification> {
+    const result = await this.verifyVersionOrHelp("omp", "omp");
+    this.persist(result);
+    return result;
+  }
+
   /**
    * Verify multiple runtimes. Returns results in input order.
-   * @param runtimes - canonical runtime names: 'tmux', 'cmux', 'claude-code', 'codex', 'pi'
+   * @param runtimes - canonical runtime names: 'tmux', 'cmux', 'claude-code', 'codex', 'pi', 'omp', 'opencode', 'antigravity'
    */
   async verifyAll(runtimes: string[]): Promise<RuntimeVerification[]> {
     const results: RuntimeVerification[] = [];
@@ -127,6 +134,7 @@ export class RuntimeVerifier {
           results.push(result);
           break;
         }
+        case "omp": results.push(await this.verifyOmp()); break;
         default: {
           const v = this.buildVerification(runtime, "not_found", null, null, `unknown runtime: ${runtime}`);
           this.persist(v);

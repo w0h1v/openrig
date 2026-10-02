@@ -52,6 +52,8 @@ describe("row-scale mark family", () => {
 });
 
 it("gives new providers distinct readable marks", () => {
+  expect(markText(runtimeMarkSegs("omp"))).toBe("om");
+  expect(markText(runtimeMarkSegs("oh-my-pi"))).toBe("om");
   expect(markText(runtimeMarkSegs("opencode"))).toBe("oc");
   expect(markText(runtimeMarkSegs("antigravity"))).toBe("ag");
 });

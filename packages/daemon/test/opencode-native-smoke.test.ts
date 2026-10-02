@@ -59,8 +59,18 @@ describe.skipIf(!enabled)("OpenCode 1.18 native non-billable contract", () => {
       await until(() => /Plan · Nemotron 3.5 Lightning Free/.test(tmux("capture-pane", "-p", "-t", "seat")));
       tmux("resize-window", "-t", "seat", "-x", "90", "-y", "30");
       tmux("send-keys", "-t", "seat", "-l", "UNSUBMITTED OPENRIG DRAFT");
-      await until(() => tmux("capture-pane", "-p", "-t", "seat").includes("UNSUBMITTED OPENRIG DRAFT"));
-      expect(classifyOpenCodePrompt(tmux("capture-pane", "-p", "-t", "seat"))).toBe("draft");
+      // Resize and input redraw asynchronously; visible text alone can precede
+      // completion of the native composer border/model rows.
+      let draftFrame = "";
+      try {
+        await until(() => {
+          draftFrame = tmux("capture-pane", "-p", "-t", "seat");
+          return draftFrame.includes("UNSUBMITTED OPENRIG DRAFT") && classifyOpenCodePrompt(draftFrame) === "draft";
+        });
+      } catch (error) {
+        throw new Error(`${(error as Error).message}\nLast native draft frame:\n${draftFrame}`);
+      }
+      expect(classifyOpenCodePrompt(draftFrame)).toBe("draft");
       // Killing the terminal discards this draft; no Enter/model request is sent.
       await stop();
       launch("resume", ["--resume", id]);

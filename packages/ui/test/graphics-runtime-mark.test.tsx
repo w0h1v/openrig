@@ -14,6 +14,8 @@ describe("graphics runtime package", () => {
     expect(runtimeBrand("claude-code").label).toBe("Claude");
     expect(normalizeRuntimeBrandId("codex")).toBe("codex");
     expect(runtimeBrand("codex").label).toBe("Codex");
+    expect(runtimeBrand("omp").label).toBe("Oh My Pi");
+    expect(normalizeRuntimeBrandId("oh-my-pi")).toBe("omp");
     expect(runtimeBrand("opencode").label).toBe("OpenCode");
     expect(runtimeBrand("antigravity").label).toBe("Antigravity CLI");
   });

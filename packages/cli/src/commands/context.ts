@@ -377,7 +377,7 @@ Examples:
     .description("Walk the topology tree for one chain filename (instance -> rig -> optional pod -> optional seat), keyed off topology.root")
     .requiredOption("--rig <rig>", "Rig name (the rigs/<rig> altitude)")
     .option("--pod <pod>", "Pod id (the pods/<pod> altitude); omit when no pod context is selected")
-    .option("--seat <seat>", "Seat id (the seats/<seat> altitude); omit for a rig-level trace")
+    .option("--seat <seat>", "Seat folder name (<pod>-<member>, e.g. dev1-qa); omit for a rig-level trace")
     .requiredOption("--name <file>", "Chain filename, identical at every altitude (e.g. LEARNED.md, CULTURE.md)")
     .option("--json", "JSON output for agents")
     .action(async (opts: { rig: string; pod?: string; seat?: string; name: string; json?: boolean }) => {

@@ -34,7 +34,7 @@ export function broadcastCommand(depsOverride?: BroadcastDeps): Command {
   cmd
     .argument("[text]", "Message text to broadcast (optional with --context)")
     .option("--rig <name>", "Broadcast to all sessions in a rig")
-    .option("--pod <name>", "Broadcast to all sessions in a pod")
+    .option("--pod <name>", "Broadcast to matching pod names across all rigs unless --rig is set")
     .option("--force", "Send even if targets appear mid-task")
     .option("--host <id>", "Broadcast on a remote host declared in ~/.openrig/hosts.yaml (http hosts only — CLI-direct to the remote daemon's fan-out)")
     .option("--context <ref>", "Broadcast a context pack by its path-like ref (e.g. packs/fleet-update). Resolved content is fanned out; an oversized ref is flagged 'walk-sized'.")

@@ -31,6 +31,17 @@ describe("RuntimeVerifier", () => {
     db.close();
   });
 
+  it("verifies OMP, OpenCode, and Antigravity together with their native binaries", async () => {
+    const exec = createMockExec({ "omp --version": "1.0.0", "opencode --version": "1.18.25", "agy --version": "1.2.14" });
+    const verifier = new RuntimeVerifier({ exec, db });
+    const results = await verifier.verifyAll(["omp", "opencode", "antigravity"]);
+    expect(results.map(({ runtime, status }) => ({ runtime, status }))).toEqual([
+      { runtime: "omp", status: "verified" },
+      { runtime: "opencode", status: "verified" },
+      { runtime: "antigravity", status: "verified" },
+    ]);
+  });
+
   // T1: tmux present + version parsed -> verified
   it("tmux present with parseable version -> verified", async () => {
     const exec = createMockExec({ "tmux -V": "tmux 3.4" });

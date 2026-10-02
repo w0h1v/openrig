@@ -197,6 +197,7 @@ export function runtimeMarkSegs(runtime: string | null | undefined): MarkSeg[] {
   const r = (runtime ?? "").toLowerCase();
   if (r.startsWith("claude")) return clawdSquareMark(); // round-3 locked square
   if (r.startsWith("codex")) return codexMark();
+  if (r === "omp" || r === "oh-my-pi" || r.startsWith("omp-")) return [{ text: "om", token: "markInk" }];
   if (r === "opencode") return [{ text: "oc", token: "markInk" }];
   if (r === "antigravity") return [{ text: "ag", token: "markInk" }];
   if (r === "terminal" || r === "tty" || r.startsWith("external")) return terminalMark();

@@ -77,10 +77,14 @@ export interface WebApiResult {
 
 /** S10 shape-fix — the per-method REQUEST SHAPE. Slack's read methods (conversations.info /
  *  history / replies) reject a JSON POST with `invalid_arguments` (operator-measured live);
- *  their supported shape is GET with URL-query args. Write/JSON methods (auth.test,
- *  apps.connections.open, chat.postMessage, files.completeUploadExternal) keep JSON POST
- *  byte-identically — the default, so no existing caller changes shape implicitly. */
-export type WebApiRequestShape = "json-post" | "get-query";
+ *  their supported shape is GET with URL-query args. The external-upload methods
+ *  (files.getUploadURLExternal / files.completeUploadExternal) are sent "form-post": url-encoded
+ *  fields, objects/arrays as JSON strings, which is how Slack's own Web API client sends every call.
+ *  files.getUploadURLExternal answers a JSON body with `invalid_arguments` ("missing required
+ *  field: length / filename") although its reference lists JSON. Write methods (auth.test,
+ *  apps.connections.open, chat.postMessage) keep JSON POST byte-identically — the default, so no
+ *  existing caller changes shape implicitly. */
+export type WebApiRequestShape = "json-post" | "get-query" | "form-post";
 
 /** Call a Slack Web API method (Bearer token) and surface the granted-scope header. */
 export async function callWebApi(
@@ -104,6 +108,17 @@ export async function callWebApi(
         res = await fetchImpl(url.toString(), {
           method: "GET",
           headers: { authorization: `Bearer ${token}` },
+          signal,
+        });
+      } else if (shape === "form-post") {
+        const form = new URLSearchParams();
+        for (const [k, v] of Object.entries(body)) {
+          if (v !== undefined && v !== null) form.set(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+        }
+        res = await fetchImpl(`https://slack.com/api/${method}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
+          body: form.toString(),
           signal,
         });
       } else {
@@ -167,9 +182,34 @@ export async function downloadPrivateFile(
       if (contentType.includes("text/html")) {
         return { ok: false as const, error: "auth failure (Slack served an HTML page instead of the file)" };
       }
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.byteLength > maxBytes) return { ok: false as const, error: `exceeds size bound (${buf.byteLength} > ${maxBytes})` };
-      return { ok: true as const, bytes: buf };
+      // Enforce the bound while receiving, including chunked responses without
+      // Content-Length. arrayBuffer() would allocate the entire oversized file
+      // before checking the limit.
+      if (!res.body) return { ok: true as const, bytes: new Uint8Array() };
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          length += value.byteLength;
+          if (length > maxBytes) {
+            await reader.cancel().catch(() => {});
+            return { ok: false as const, error: `exceeds size bound (${length} > ${maxBytes})` };
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { ok: true as const, bytes };
     });
   } catch (e) {
     return { ok: false, error: (e as Error).message || "download failed" };
@@ -235,17 +275,18 @@ export async function getUploadURLExternal(
   fetchImpl: FetchImpl = defaultFetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; uploadUrl?: string; fileId?: string; error?: string }> {
-  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs);
+  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs, "form-post");
   if (!r.ok) return { ok: false, error: r.error };
   return { ok: true, uploadUrl: r.json.upload_url as string, fileId: r.json.file_id as string };
 }
 
-/** Leg 2: POST the raw bytes to the pre-signed upload URL (octet-stream, no auth header). */
+/** Leg 2: POST the raw bytes to the pre-signed upload URL (octet-stream, no auth header). The
+ *  default timeout grows with the size (a screen recording can be tens of MB): 15 s plus 1 s per 512 KiB. */
 export async function uploadBytesExternal(
   uploadUrl: string,
   bytes: Uint8Array,
   fetchImpl: FetchImpl = defaultFetch,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs = DEFAULT_TIMEOUT_MS + Math.ceil(bytes.length / 524_288) * 1000,
 ): Promise<HttpResult> {
   try {
     return await withTimeout(timeoutMs, async (signal) => {
@@ -272,7 +313,7 @@ export async function completeUploadExternal(
   const body: Record<string, unknown> = { files: input.files, channel_id: input.channelId };
   if (input.threadTs) body.thread_ts = input.threadTs;
   if (input.initialComment) body.initial_comment = input.initialComment;
-  const r = await callWebApi("files.completeUploadExternal", token, body, fetchImpl, timeoutMs);
+  const r = await callWebApi("files.completeUploadExternal", token, body, fetchImpl, timeoutMs, "form-post");
   return { ok: r.ok, error: r.error };
 }
 

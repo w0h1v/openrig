@@ -303,6 +303,17 @@ Usage: `rig ui open`
 
 The OpenRig UI is experimental and in maintenance mode. It is not under active development; support is best-effort. The CLI is the primary supported interface. Contributions welcome.
 
+The web UI and its terminal WebSocket are off by default. To enable them:
+
+```bash
+rig config set ui.enabled true
+rig daemon stop
+rig daemon start
+rig ui open
+```
+
+The daemon reads `ui.enabled` at startup. Changing the setting does not change a running daemon; stop and start it to apply the change. The CLI, TUI, and API remain available when the web UI is disabled.
+
 Subcommands:
 - `open`
 
@@ -1787,6 +1798,7 @@ Subcommands:
 - `validate <path> [options]` — validate plugin manifest + skill frontmatter against the agentskills.io spec.
 
 Notes:
+- `used-by` includes bare `<id>` and `shared:<id>` profile references from user and shipped agents, even if the plugin is not installed. Resource definitions without a consuming profile are listed separately; JSON rows distinguish `kind: consumer` from `kind: definition`.
 - Plugin discovery aggregates `$OPENRIG_HOME/plugins/` (vendored at runtime by the operator) with the daemon's bundled plugin cache.
 - `openrig-core` ships bundled with the daemon (11 skills). Additional plugins (`gstack` — 45 skills; `obra-superpowers` — 14 skills) ship as substrate references for plugin authors to copy-install per the `OPENRIG-INSTALL.md` workflow inside each plugin's source tree.
 - A first-class `rig plugin install <substrate-path>` verb is deferred to 0.3.2.
